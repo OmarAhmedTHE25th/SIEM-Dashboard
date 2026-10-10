@@ -1,7 +1,8 @@
 import sqlite3
 import os
 
-DB_NAME = os.path.expanduser("~/siem.db")
+
+DB_NAME = "/home/omar-25th/siem.db"
 
 
 def init_db():

@@ -74,18 +74,20 @@ if __name__ == "__main__":
 
         insert_event(event)
 
-        # 1. Rule-Based Sliding Window Engine
-        rule_alert = rule_detector.process_event(event)
-        if rule_alert:
-            insert_alert(rule_alert)
-            print(f"[RULE ALERT] {rule_alert['rule_name']} from {rule_alert['attacker_ip']}")
-
         # 2. Machine Learning Anomaly Detection
         features = tracker.add_and_extract(event)
+
+        # DEBUG: See what is actually happening every time an event arrives
+        print(f"[*] IP: {event['source_ip']} | Attempts: {features['total_attempts']} | is_ready: {ml_scorer.is_ready}")
+
+        if not ml_scorer.is_ready:
+            print("[!] WARNING: ml_scorer.is_ready is False! Model file failed to load.")
 
         # Only score once an IP has generated at least 3 attempts
         if features["total_attempts"] >= 3 and ml_scorer.is_ready:
             is_anomaly, score = ml_scorer.score_ip_behavior(features)
+
+
             if is_anomaly:
                 ml_alert = {
                     "timestamp": datetime.now(timezone.utc),

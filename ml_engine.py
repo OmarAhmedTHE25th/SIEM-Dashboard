@@ -6,7 +6,7 @@ from sklearn.ensemble import IsolationForest
 import joblib
 
 DB_NAME = os.path.expanduser("~/siem.db")
-MODEL_FILE = os.path.expanduser("~/siem_isoforest.joblib")
+MODEL_FILE = "/home/omar-25th/siem_isoforest.joblib"
 
 FEATURE_COLS = ["total_attempts", "failure_rate", "unique_users", "mean_interval", "std_interval"]
 
