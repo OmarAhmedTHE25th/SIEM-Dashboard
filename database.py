@@ -1,8 +1,7 @@
 import sqlite3
-import os
+from config import DB_PATH
 
-
-DB_NAME = "/home/omar-25th/siem.db"
+DB_NAME = DB_PATH
 
 
 def init_db():

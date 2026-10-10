@@ -1,24 +1,17 @@
 import os
-import sys
 import sqlite3
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
+from config import DB_PATH
+
 app = FastAPI(title="SIEM Dashboard API")
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Automatically detect whether this script is running inside Linux/WSL or Windows
-if sys.platform.startswith("win"):
-    # Accessing WSL ext4 filesystem from Windows
-    DB_NAME = r"\\wsl.localhost\Ubuntu\home\omar-25th\siem.db"
-else:
-    # Running directly inside Linux/WSL
-    DB_NAME = "/home/omar-25th/siem.db"
 
-print(f"[*] Running on {sys.platform} | Database target: {DB_NAME}")
-print(f"[*] Database file exists: {os.path.exists(DB_NAME)}")
+DB_NAME = DB_PATH
 
 
 def get_db():
