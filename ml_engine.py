@@ -81,12 +81,9 @@ def train_model():
 class AnomalyScorer:
     def __init__(self, score_threshold=0.05):
         self.threshold = score_threshold
-        print(f"[DEBUG] Attempting to load model from: {MODEL_FILE}")
-        print(f"[DEBUG] File exists check: {os.path.exists(MODEL_FILE)}")
         try:
             self.model = joblib.load(MODEL_FILE)
             self.is_ready = True
-            print("[DEBUG] Model loaded successfully!")
         except Exception as e:
             print(f"[DEBUG] LOAD FAILED WITH ERROR: {type(e).__name__}: {e}")
             self.model = None
