@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SIEM Monitoring Console</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-8 font-sans">
+  <div class="max-w-6xl mx-auto space-y-6">
+
+    <!-- Header -->
+    <header class="flex justify-between items-center border-b border-slate-800 pb-4">
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-white">SIEM Telemetry & Detection</h1>
+        <p class="text-sm text-slate-400">Live endpoint monitoring & threat detection engine</p>
+      </div>
+      <div class="flex items-center space-x-2">
+        <span class="relative flex h-3 w-3">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+        </span>
+        <span class="text-xs font-mono uppercase tracking-wider text-slate-300">Live Agent Connected</span>
+      </div>
+    </header>
+
+    <!-- Stat Cards -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Total Ingested Events</p>
+        <p id="stat-total" class="text-3xl font-mono font-bold text-white mt-2">0</p>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-amber-400">Failed Logins</p>
+        <p id="stat-failed" class="text-3xl font-mono font-bold text-amber-300 mt-2">0</p>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-rose-500">Triggered Incidents</p>
+        <p id="stat-alerts" class="text-3xl font-mono font-bold text-rose-400 mt-2">0</p>
+      </div>
+    </section>
+
+    <!-- Alerts Feed -->
+    <section class="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4">
+      <div class="flex justify-between items-center">
+        <h2 class="text-lg font-semibold text-white">Active Alert Feed</h2>
+        <span class="text-xs text-slate-500 font-mono">Auto-refreshes every 2s</span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead class="text-xs uppercase text-slate-400 border-b border-slate-800">
+            <tr>
+              <th class="py-2 px-3">Timestamp</th>
+              <th class="py-2 px-3">Rule</th>
+              <th class="py-2 px-3">Severity</th>
+              <th class="py-2 px-3">Attacker IP</th>
+              <th class="py-2 px-3">Target</th>
+              <th class="py-2 px-3">Details</th>
+            </tr>
+          </thead>
+          <tbody id="alerts-table" class="divide-y divide-slate-800 font-mono text-xs">
+            <tr>
+              <td colspan="6" class="py-4 text-center text-slate-500">Awaiting events...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    async function updateDashboard() {
+      try {
+        // Fetch stats
+        const statsRes = await fetch('/api/stats');
+        const stats = await statsRes.json();
+        document.getElementById('stat-total').textContent = stats.total_events;
+        document.getElementById('stat-failed').textContent = stats.failed_logins;
+        document.getElementById('stat-alerts').textContent = stats.total_alerts;
+
+        // Fetch alerts
+        const alertsRes = await fetch('/api/alerts');
+        const alerts = await alertsRes.json();
+        const tbody = document.getElementById('alerts-table');
+
+        if (alerts.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500">No active incidents</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = alerts.map(a => `
+          <tr class="hover:bg-slate-800/50 transition">
+            <td class="py-3 px-3 text-slate-400">${a.timestamp.replace('T', ' ').substring(0, 19)}</td>
+            <td class="py-3 px-3 text-rose-300 font-bold">${a.rule_name}</td>
+            <td class="py-3 px-3">
+              <span class="px-2 py-0.5 rounded bg-rose-950 text-rose-400 border border-rose-800 text-[10px] uppercase font-bold">
+                ${a.severity}
+              </span>
+            </td>
+            <td class="py-3 px-3 text-amber-200">${a.attacker_ip}</td>
+            <td class="py-3 px-3 text-slate-300">${a.target_user}</td>
+            <td class="py-3 px-3 text-slate-400">${a.description}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error("Dashboard poll failed:", err);
+      }
+    }
+
+    // Initial load + poll every 2 seconds
+    updateDashboard();
+    setInterval(updateDashboard, 2000);
+  </script>
+</body>
+</html>
