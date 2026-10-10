@@ -38,18 +38,21 @@ def get_stats():
         with get_db() as conn:
             cur = conn.cursor()
             total_events = cur.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            failed_logins = cur.execute(
+                "SELECT COUNT(*) FROM events WHERE status = 'failed'"
+            ).fetchone()[0]
             total_alerts = cur.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
             unique_ips = cur.execute("SELECT COUNT(DISTINCT attacker_ip) FROM alerts").fetchone()[0]
 
             return {
                 "total_events": total_events,
+                "failed_logins": failed_logins,
                 "total_alerts": total_alerts,
                 "unique_attacker_ips": unique_ips
             }
     except Exception as e:
         print(f"[API ERROR /api/stats]: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/alerts")
 def get_alerts(limit: int = 50):

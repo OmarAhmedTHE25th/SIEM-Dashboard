@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from parser import parse_auth_line
 from engine import BruteForceDetector
 from ingestionGen import tail_file
@@ -7,7 +7,7 @@ from database import init_db, insert_event, insert_alert
 from ml_engine import AnomalyScorer
 
 LOG_PATH = "/var/log/auth.log"
-
+ML_ALERT_COOLDOWN = timedelta(minutes=5)
 
 class RealtimeBehaviorTracker:
     """Tracks per-IP operational metrics in memory for real-time ML scoring."""
@@ -64,8 +64,11 @@ if __name__ == "__main__":
     rule_detector = BruteForceDetector(threshold=3, window_seconds=60)
     ml_scorer = AnomalyScorer()
     tracker = RealtimeBehaviorTracker()
+    last_ml_alert = {}
 
     print(f"[*] SIEM Agent live. Watching {LOG_PATH} with Rule + ML Detection...")
+    if not ml_scorer.is_ready:
+        print("[!] WARNING: ML model not loaded. Run `python ml_engine.py` to train it. Rules only for now.")
 
     for raw_line in tail_file(LOG_PATH):
         event = parse_auth_line(raw_line)
@@ -74,28 +77,35 @@ if __name__ == "__main__":
 
         insert_event(event)
 
-        # 2. Machine Learning Anomaly Detection
+
+        rule_alert = rule_detector.process_event(event)
+        if rule_alert:
+            insert_alert(rule_alert)
+            print(f"[RULE ALERT] {rule_alert['rule_name']} from {rule_alert['attacker_ip']}")
+
+
         features = tracker.add_and_extract(event)
 
-        # DEBUG: See what is actually happening every time an event arrives
-        print(f"[*] IP: {event['source_ip']} | Attempts: {features['total_attempts']} | is_ready: {ml_scorer.is_ready}")
-
-        if not ml_scorer.is_ready:
-            print("[!] WARNING: ml_scorer.is_ready is False! Model file failed to load.")
-
-        # Only score once an IP has generated at least 3 attempts
         if features["total_attempts"] >= 3 and ml_scorer.is_ready:
             is_anomaly, score = ml_scorer.score_ip_behavior(features)
 
-
             if is_anomaly:
+                ip = event["source_ip"]
+                now = datetime.now(timezone.utc)
+                last = last_ml_alert.get(ip)
+
+
+                if last and now - last < ML_ALERT_COOLDOWN:
+                    continue
+
+                last_ml_alert[ip] = now
                 ml_alert = {
-                    "timestamp": datetime.now(timezone.utc),
+                    "timestamp": now,
                     "rule_name": "ML_ANOMALOUS_BEHAVIOR",
                     "severity": "HIGH",
-                    "attacker_ip": event["source_ip"],
+                    "attacker_ip": ip,
                     "target_user": event["user"],
                     "description": f"IsolationForest outlier detected (Score: {score:.3f}, FailRate: {features['failure_rate']:.2f}, SprayCount: {features['unique_users']})"
                 }
                 insert_alert(ml_alert)
-                print(f"[ML ALERT] Anomaly from {event['source_ip']} (Score: {score:.3f})")
+                print(f"[ML ALERT] Anomaly from {ip} (Score: {score:.3f})")
