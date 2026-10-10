@@ -1,7 +1,7 @@
 import sqlite3
-from datetime import datetime
+import os
 
-DB_NAME = "siem.db"
+DB_NAME = os.path.expanduser("~/siem.db")
 
 
 def init_db():

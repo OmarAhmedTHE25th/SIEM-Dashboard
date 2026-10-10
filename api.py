@@ -1,9 +1,13 @@
 import sqlite3
+from pathlib import Path
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 
 app = FastAPI(title="Custom SIEM API", version="1.0")
-DB_NAME = "siem.db"
+
+import os
+
+DB_NAME = os.path.expanduser("~/siem.db")
 
 
 def query_db(query: str, args: tuple = (), one: bool = False):
@@ -39,7 +43,11 @@ def get_alerts(limit: int = 15):
     return [dict(row) for row in rows]
 
 
-@app.get("/", response_class=HTMLResponse)
+
+
+BASE_DIR = Path(__file__).resolve().parent
+
+@app.get("/")
 def serve_dashboard():
-    with open("dashboard.html", "r", encoding="utf-8") as f:
-        return f.read()
+    dashboard_path = BASE_DIR / "dashboard.html"
+    return FileResponse(dashboard_path)

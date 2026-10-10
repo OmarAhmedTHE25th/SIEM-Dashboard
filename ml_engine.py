@@ -1,41 +1,51 @@
 import sqlite3
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import os
 from sklearn.ensemble import IsolationForest
 import joblib
 
-DB_NAME = "siem.db"
-MODEL_FILE = "siem_isoforest.joblib"
+DB_NAME = os.path.expanduser("~/siem.db")
+MODEL_FILE = os.path.expanduser("~/siem_isoforest.joblib")
+
+FEATURE_COLS = ["total_attempts", "failure_rate", "unique_users", "mean_interval", "std_interval"]
+
+
+def transform_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Log-transforms heavy-tailed features so orders of magnitude stand out."""
+    df_transformed = df.copy()
+    df_transformed["total_attempts"] = np.log1p(df_transformed["total_attempts"])
+    df_transformed["unique_users"] = np.log1p(df_transformed["unique_users"])
+    df_transformed["mean_interval"] = np.log1p(df_transformed["mean_interval"])
+    df_transformed["std_interval"] = np.log1p(df_transformed["std_interval"])
+    return df_transformed[FEATURE_COLS]
+
 
 def extract_features_from_db() -> pd.DataFrame:
-    """Queries raw events from SQLite and aggregates them into behavioral feature vectors per IP."""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=15.0)
+    conn.execute("PRAGMA mmap_size = 0;")
     df = pd.read_sql_query("SELECT timestamp, source_ip, user, status FROM events", conn)
     conn.close()
 
     if df.empty:
         return pd.DataFrame()
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], format="ISO8601", utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="mixed", utc=True)
     df = df.sort_values(by=["source_ip", "timestamp"])
 
     feature_rows = []
-
     for ip, group in df.groupby("source_ip"):
         total_attempts = len(group)
         failures = (group["status"] == "failed").sum()
         failure_rate = failures / total_attempts if total_attempts > 0 else 0.0
         unique_users = group["user"].nunique()
 
-        # Inter-arrival time between attempts
         if total_attempts > 1:
             time_deltas = group["timestamp"].diff().dt.total_seconds().dropna()
             mean_interval = float(time_deltas.mean())
             std_interval = float(time_deltas.std(ddof=0))
         else:
-            # Single event defaults
-            mean_interval = 3600.0  # arbitrary large baseline interval
+            mean_interval = 3600.0
             std_interval = 0.0
 
         feature_rows.append({
@@ -50,32 +60,26 @@ def extract_features_from_db() -> pd.DataFrame:
     return pd.DataFrame(feature_rows)
 
 
-FEATURE_COLS = ["total_attempts", "failure_rate", "unique_users", "mean_interval", "std_interval"]
-
-
 def train_model():
-    """Trains an Isolation Forest on current events and saves the weights to disk."""
     df_features = extract_features_from_db()
-
-    if len(df_features) < 3:
-        print("[!] Not enough distinct IP profiles to train yet (need at least 3 distinct IPs).")
+    if len(df_features) < 5:
+        print("[!] Not enough profiles to train.")
         return None
 
-    X = df_features[FEATURE_COLS]
+    X = transform_features(df_features)
 
-    # contamination: expected proportion of outliers in the data (e.g., 5-10%)
-    model = IsolationForest(n_estimators=100, contamination=0.1, random_state=42)
+    # Set contamination to 0.35 to match the dirty historical set
+    model = IsolationForest(n_estimators=150, contamination=0.35, random_state=42)
     model.fit(X)
 
     joblib.dump(model, MODEL_FILE)
-    print(f"[+] Model trained successfully on {len(df_features)} IP profiles and saved to {MODEL_FILE}")
+    print(f"[+] Model retrained with log-scaling on {len(df_features)} profiles.")
     return model
 
 
 class AnomalyScorer:
-    """Loads the trained model and scores behavioral feature vectors."""
-
-    def __init__(self):
+    def __init__(self, score_threshold=0.05):
+        self.threshold = score_threshold
         try:
             self.model = joblib.load(MODEL_FILE)
             self.is_ready = True
@@ -84,28 +88,17 @@ class AnomalyScorer:
             self.is_ready = False
 
     def score_ip_behavior(self, features: dict) -> tuple[bool, float]:
-        """
-        Returns (is_anomaly, anomaly_score).
-        IsolationForest:
-          - predict: -1 for outlier/anomaly, 1 for inlier/normal
-          - decision_function: lower/negative values indicate anomalous behavior
-        """
         if not self.is_ready:
             return False, 0.0
 
-        X = pd.DataFrame([[
-            features["total_attempts"],
-            features["failure_rate"],
-            features["unique_users"],
-            features["mean_interval"],
-            features["std_interval"]
-        ]], columns=FEATURE_COLS)
+        raw_df = pd.DataFrame([features])
+        X = transform_features(raw_df)
 
-        prediction = self.model.predict(X)[0]
-        score = self.model.decision_function(X)[0]
+        score = float(self.model.decision_function(X)[0])
 
-        is_anomaly = (prediction == -1)
-        return is_anomaly, float(score)
+        # An anomaly is either predict == -1 or score is below our sensitivity threshold
+        is_anomaly = score < self.threshold
+        return is_anomaly, score
 
 
 if __name__ == "__main__":
