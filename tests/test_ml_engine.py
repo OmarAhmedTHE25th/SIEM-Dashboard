@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from ml_engine import AnomalyScorer
+from ml_engine import AnomalyScorer, severity_from_score
 
 
 class StubModel:
@@ -11,6 +11,12 @@ class StubModel:
 
 
 class AnomalyScorerTests(unittest.TestCase):
+    def test_maps_scores_to_severity_levels(self):
+        self.assertEqual(severity_from_score(-0.2), "CRITICAL")
+        self.assertEqual(severity_from_score(-0.01), "HIGH")
+        self.assertEqual(severity_from_score(0.04), "MEDIUM")
+        self.assertEqual(severity_from_score(0.05), "LOW")
+
     def test_is_not_ready_when_model_cannot_be_loaded(self):
         with patch("ml_engine.joblib.load", side_effect=FileNotFoundError):
             scorer = AnomalyScorer()

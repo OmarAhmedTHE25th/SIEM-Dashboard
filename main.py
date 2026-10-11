@@ -6,7 +6,7 @@ from parser import parse_auth_line
 from engine import BruteForceDetector
 from ingestionGen import tail_file
 from database import init_db, insert_event, insert_alert
-from ml_engine import AnomalyScorer
+from ml_engine import AnomalyScorer, severity_from_score
 
 DEFAULT_LOG_PATH = "/var/log/auth.log"
 ML_ALERT_COOLDOWN = timedelta(minutes=5)
@@ -124,7 +124,7 @@ if __name__ == "__main__":
                 ml_alert = {
                     "timestamp": now,
                     "rule_name": "ML_ANOMALOUS_BEHAVIOR",
-                    "severity": "HIGH",
+                    "severity": severity_from_score(score, ml_scorer.threshold),
                     "attacker_ip": ip,
                     "target_user": event["user"],
                     "description": f"IsolationForest outlier detected (Score: {score:.3f}, FailRate: {features['failure_rate']:.2f}, SprayCount: {features['unique_users']})"

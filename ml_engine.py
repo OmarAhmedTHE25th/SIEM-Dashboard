@@ -12,6 +12,17 @@ MODEL_FILE = MODEL_PATH
 FEATURE_COLS = ["total_attempts", "failure_rate", "unique_users", "mean_interval", "std_interval"]
 
 
+def severity_from_score(score: float, threshold: float = 0.05) -> str:
+    """Maps an IsolationForest score to the alert severity scale."""
+    if score <= -0.2:
+        return "CRITICAL"
+    if score < 0:
+        return "HIGH"
+    if score < threshold:
+        return "MEDIUM"
+    return "LOW"
+
+
 def transform_features(df: pd.DataFrame) -> pd.DataFrame:
     """Log-transforms heavy-tailed features so orders of magnitude stand out."""
     df_transformed = df.copy()

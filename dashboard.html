@@ -89,12 +89,19 @@
           return;
         }
 
+        const severityClasses = {
+          CRITICAL: 'bg-red-950 text-red-300 border-red-700',
+          HIGH: 'bg-rose-950 text-rose-400 border-rose-800',
+          MEDIUM: 'bg-amber-950 text-amber-300 border-amber-800',
+          LOW: 'bg-slate-800 text-slate-300 border-slate-600'
+        };
+
         tbody.innerHTML = alerts.map(a => `
           <tr class="hover:bg-slate-800/50 transition">
             <td class="py-3 px-3 text-slate-400">${a.timestamp.replace('T', ' ').substring(0, 19)}</td>
             <td class="py-3 px-3 text-rose-300 font-bold">${a.rule_name}</td>
             <td class="py-3 px-3">
-              <span class="px-2 py-0.5 rounded bg-rose-950 text-rose-400 border border-rose-800 text-[10px] uppercase font-bold">
+              <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.severity] || severityClasses.LOW}">
                 ${a.severity}
               </span>
             </td>
