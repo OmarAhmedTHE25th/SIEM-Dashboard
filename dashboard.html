@@ -4,11 +4,11 @@
   <meta charset="UTF-8">
   <title>SIEM Monitoring Console</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen p-8 font-sans">
   <div class="max-w-6xl mx-auto space-y-6">
 
-    <!-- Header -->
     <header class="flex justify-between items-center border-b border-slate-800 pb-4">
       <div>
         <h1 class="text-2xl font-bold tracking-tight text-white">SIEM Telemetry & Detection</h1>
@@ -23,7 +23,6 @@
       </div>
     </header>
 
-    <!-- Stat Cards -->
     <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
         <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Total Ingested Events</p>
@@ -39,7 +38,17 @@
       </div>
     </section>
 
-    <!-- Alerts Feed -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
+        <h2 class="text-lg font-semibold text-white mb-4">Alert severity mix</h2>
+        <canvas id="severityChart" height="180"></canvas>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
+        <h2 class="text-lg font-semibold text-white mb-4">Top offending IPs</h2>
+        <canvas id="attackerChart" height="180"></canvas>
+      </div>
+    </section>
+
     <section class="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4">
       <div class="flex justify-between items-center">
         <h2 class="text-lg font-semibold text-white">Active Alert Feed</h2>
@@ -55,12 +64,13 @@
               <th class="py-2 px-3">Severity</th>
               <th class="py-2 px-3">Attacker IP</th>
               <th class="py-2 px-3">Target</th>
+              <th class="py-2 px-3">Status</th>
               <th class="py-2 px-3">Details</th>
             </tr>
           </thead>
           <tbody id="alerts-table" class="divide-y divide-slate-800 font-mono text-xs">
             <tr>
-              <td colspan="6" class="py-4 text-center text-slate-500">Awaiting events...</td>
+              <td colspan="7" class="py-4 text-center text-slate-500">Awaiting events...</td>
             </tr>
           </tbody>
         </table>
@@ -70,35 +80,123 @@
   </div>
 
   <script>
+    const severityClasses = {
+      CRITICAL: 'bg-red-950 text-red-300 border-red-700',
+      HIGH: 'bg-rose-950 text-rose-400 border-rose-800',
+      MEDIUM: 'bg-amber-950 text-amber-300 border-amber-800',
+      LOW: 'bg-slate-800 text-slate-300 border-slate-600',
+      active: 'bg-emerald-950 text-emerald-300 border-emerald-800',
+      acknowledged: 'bg-sky-950 text-sky-300 border-sky-800',
+      suppressed: 'bg-slate-700 text-slate-200 border-slate-600'
+    };
+
+    let severityChart = null;
+    let attackerChart = null;
+
+    function renderSeverityChart(alerts) {
+      const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+      alerts.forEach(a => { if (counts[a.severity] !== undefined) counts[a.severity] += 1; });
+
+      const data = Object.values(counts);
+      if (severityChart) {
+        severityChart.data.datasets[0].data = data;
+        severityChart.update();
+        return;
+      }
+
+      severityChart = new Chart(document.getElementById('severityChart'), {
+        type: 'doughnut',
+        data: {
+          labels: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
+          datasets: [{
+            data,
+            backgroundColor: ['#f87171', '#fb7185', '#fbbf24', '#94a3b8'],
+            borderColor: '#0f172a',
+            borderWidth: 2
+          }]
+        },
+        options: { plugins: { legend: { labels: { color: '#e2e8f0' } } }, maintainAspectRatio: false }
+      });
+    }
+
+    function renderAttackerChart(alerts) {
+      const counts = {};
+      alerts.forEach(a => {
+        counts[a.attacker_ip] = (counts[a.attacker_ip] || 0) + 1;
+      });
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      const labels = top.map(([ip]) => ip);
+      const values = top.map(([, count]) => count);
+
+      if (attackerChart) {
+        attackerChart.data.labels = labels;
+        attackerChart.data.datasets[0].data = values;
+        attackerChart.update();
+        return;
+      }
+
+      attackerChart = new Chart(document.getElementById('attackerChart'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Alerts',
+            data: values,
+            backgroundColor: '#38bdf8',
+            borderRadius: 6
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          scales: { x: { ticks: { color: '#cbd5e1' }, grid: { color: '#1e293b' } }, y: { ticks: { color: '#cbd5e1' }, grid: { color: '#1e293b' } } },
+          plugins: { legend: { display: false } },
+          maintainAspectRatio: false
+        }
+      });
+    }
+
+    function apiUrl(path) {
+      const token = localStorage.getItem('siem_api_token') || new URLSearchParams(window.location.search).get('token');
+      if (!token) return path;
+      const separator = path.includes('?') ? '&' : '?';
+      return `${path}${separator}token=${encodeURIComponent(token)}`;
+    }
+
+    function authHeaders() {
+      const token = localStorage.getItem('siem_api_token') || new URLSearchParams(window.location.search).get('token');
+      return token ? { 'Authorization': `Bearer ${token}` } : {};
+    }
+
     async function updateDashboard() {
       try {
-        // Fetch stats
-        const statsRes = await fetch('/api/stats');
+        const statsRes = await fetch(apiUrl('/api/stats'), { headers: authHeaders() });
+        if (statsRes.status === 401) {
+          const token = prompt('Enter SIEM API token to access the dashboard');
+          if (!token) return;
+          localStorage.setItem('siem_api_token', token);
+          window.location.reload();
+          return;
+        }
         const stats = await statsRes.json();
         document.getElementById('stat-total').textContent = stats.total_events;
         document.getElementById('stat-failed').textContent = stats.failed_logins;
         document.getElementById('stat-alerts').textContent = stats.total_alerts;
 
-        // Fetch alerts
-        const alertsRes = await fetch('/api/alerts');
+        const alertsRes = await fetch(apiUrl('/api/alerts?limit=20'), { headers: authHeaders() });
         const alerts = await alertsRes.json();
         const tbody = document.getElementById('alerts-table');
 
+        renderSeverityChart(alerts);
+        renderAttackerChart(alerts);
+
         if (alerts.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-500">No active incidents</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" class="py-4 text-center text-slate-500">No active incidents</td></tr>';
           return;
         }
 
-        const severityClasses = {
-          CRITICAL: 'bg-red-950 text-red-300 border-red-700',
-          HIGH: 'bg-rose-950 text-rose-400 border-rose-800',
-          MEDIUM: 'bg-amber-950 text-amber-300 border-amber-800',
-          LOW: 'bg-slate-800 text-slate-300 border-slate-600'
-        };
-
         tbody.innerHTML = alerts.map(a => `
           <tr class="hover:bg-slate-800/50 transition">
-            <td class="py-3 px-3 text-slate-400">${a.timestamp.replace('T', ' ').substring(0, 19)}</td>
+            <td class="py-3 px-3 text-slate-400">${(a.timestamp || '').replace('T', ' ').substring(0, 19)}</td>
             <td class="py-3 px-3 text-rose-300 font-bold">${a.rule_name}</td>
             <td class="py-3 px-3">
               <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.severity] || severityClasses.LOW}">
@@ -107,15 +205,19 @@
             </td>
             <td class="py-3 px-3 text-amber-200">${a.attacker_ip}</td>
             <td class="py-3 px-3 text-slate-300">${a.target_user}</td>
+            <td class="py-3 px-3">
+              <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.status] || severityClasses.active}">
+                ${a.status || 'active'}
+              </span>
+            </td>
             <td class="py-3 px-3 text-slate-400">${a.description}</td>
           </tr>
         `).join('');
       } catch (err) {
-        console.error("Dashboard poll failed:", err);
+        console.error('Dashboard poll failed:', err);
       }
     }
 
-    // Initial load + poll every 2 seconds
     updateDashboard();
     setInterval(updateDashboard, 2000);
   </script>

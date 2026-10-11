@@ -1,7 +1,8 @@
 import os
 import sqlite3
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from config import DB_PATH
@@ -9,8 +10,6 @@ from config import DB_PATH
 app = FastAPI(title="SIEM Dashboard API")
 
 BASE_DIR = Path(__file__).resolve().parent
-
-
 DB_NAME = DB_PATH
 
 
@@ -24,7 +23,28 @@ def get_db():
     return conn
 
 
-@app.get("/")
+def require_api_auth(request: Request):
+    token = os.getenv("SIEM_API_TOKEN")
+    if not token:
+        return
+
+    auth_header = request.headers.get("authorization", "")
+    x_api_key = request.headers.get("x-api-key", "")
+    query_token = request.query_params.get("token")
+    provided = None
+
+    if auth_header.lower().startswith("bearer "):
+        provided = auth_header.split(" ", 1)[1].strip()
+    elif x_api_key:
+        provided = x_api_key.strip()
+    elif query_token:
+        provided = query_token.strip()
+
+    if provided != token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.get("/", dependencies=[Depends(require_api_auth)])
 def serve_dashboard():
     dashboard_path = BASE_DIR / "dashboard.html"
     if not dashboard_path.exists():
@@ -32,7 +52,7 @@ def serve_dashboard():
     return FileResponse(dashboard_path)
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[Depends(require_api_auth)])
 def get_stats():
     try:
         with get_db() as conn:
@@ -54,17 +74,88 @@ def get_stats():
         print(f"[API ERROR /api/stats]: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/alerts")
-def get_alerts(limit: int = 50):
+
+@app.get("/api/alerts", dependencies=[Depends(require_api_auth)])
+def get_alerts(limit: int = 50, status: str | None = None):
+    try:
+        with get_db() as conn:
+            cur = conn.cursor()
+            if status:
+                rows = cur.execute(
+                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status "
+                    "FROM alerts WHERE status = ? ORDER BY id DESC LIMIT ?",
+                    (status.lower(), limit),
+                ).fetchall()
+            else:
+                rows = cur.execute(
+                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status "
+                    "FROM alerts ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        print(f"[API ERROR /api/alerts]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/incidents", dependencies=[Depends(require_api_auth)])
+def get_incidents(limit: int = 10):
     try:
         with get_db() as conn:
             cur = conn.cursor()
             rows = cur.execute(
-                "SELECT timestamp, rule_name, severity, attacker_ip, target_user, description "
-                "FROM alerts ORDER BY id DESC LIMIT ?",
-                (limit,)
+                """
+                SELECT attacker_ip, rule_name, COUNT(*) AS count, MAX(timestamp) AS last_seen,
+                       MIN(timestamp) AS first_seen, SUM(CASE WHEN status = 'suppressed' THEN 1 ELSE 0 END) AS suppressed_count
+                FROM alerts
+                WHERE status != 'suppressed'
+                GROUP BY attacker_ip, rule_name
+                ORDER BY count DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
             return [dict(row) for row in rows]
     except Exception as e:
-        print(f"[API ERROR /api/alerts]: {e}")
+        print(f"[API ERROR /api/incidents]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/alerts/{alert_id}/ack", dependencies=[Depends(require_api_auth)])
+def ack_alert(alert_id: int):
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            updated = cursor.execute(
+                "UPDATE alerts SET status = 'acknowledged' WHERE id = ?",
+                (alert_id,),
+            )
+            conn.commit()
+            if updated.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Alert not found")
+            return {"status": "acknowledged", "alert_id": alert_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API ERROR /api/alerts/{alert_id}/ack]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/alerts/{alert_id}/suppress", dependencies=[Depends(require_api_auth)])
+def suppress_alert(alert_id: int):
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            updated = cursor.execute(
+                "UPDATE alerts SET status = 'suppressed' WHERE id = ?",
+                (alert_id,),
+            )
+            conn.commit()
+            if updated.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Alert not found")
+            return {"status": "suppressed", "alert_id": alert_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API ERROR /api/alerts/{alert_id}/suppress]: {e}")
         raise HTTPException(status_code=500, detail=str(e))

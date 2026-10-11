@@ -1,0 +1,16 @@
+version: '3.9'
+
+services:
+  siem-dashboard:
+    build:
+      context: .
+    container_name: siem-dashboard
+    ports:
+      - "8000:8000"
+    environment:
+      - SIEM_API_TOKEN=${SIEM_API_TOKEN:-}
+      - SIEM_LOG_PATH=/var/log/auth.log
+    volumes:
+      - ./data:/app/data
+      - /var/log:/var/log:ro
+    command: uvicorn api:app --host 0.0.0.0 --port 8000

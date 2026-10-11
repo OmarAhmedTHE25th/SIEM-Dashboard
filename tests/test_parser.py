@@ -36,6 +36,19 @@ class ParseAuthLineTests(unittest.TestCase):
         self.assertEqual(event["user"], "admin")
         self.assertEqual(event["source_ip"], "198.51.100.7")
 
+    def test_parses_sudo_session_events(self):
+        line = (
+            "2026-10-10T19:13:47+03:00 server1 sudo: "
+            "pam_unix(sudo:session): session opened for user root by omar(uid=0)"
+        )
+
+        event = parse_auth_line(line)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event["status"], "success")
+        self.assertEqual(event["user"], "root")
+        self.assertEqual(event["source_ip"], "local")
+
     def test_ignores_non_ssh_or_non_password_lines(self):
         lines = (
             "2026-10-10T19:13:47+03:00 server1 cron: job completed",
