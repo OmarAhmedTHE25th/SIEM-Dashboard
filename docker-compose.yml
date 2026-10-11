@@ -1,16 +1,39 @@
-version: '3.9'
+# SIEM Dashboard: two services built from one image, sharing ./data
+#   siem-agent : tails the log file, runs the detectors, writes events/alerts
+#   siem-api   : serves the dashboard + REST API on :8000
+#
+# Usage:
+#   docker compose up --build -d
+#   SIEM_API_TOKEN=change-me docker compose up -d      # require a token
+#
+# Linux hosts only for the default log path (/var/log/auth.log).
 
 services:
-  siem-dashboard:
+  siem-agent:
     build:
       context: .
-    container_name: siem-dashboard
+    image: siem-dashboard:latest
+    container_name: siem-agent
+    command: ["python", "main.py"]
+    restart: unless-stopped
+    environment:
+      - SIEM_LOG_PATH=${SIEM_LOG_PATH:-/var/log/auth.log}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - /var/log:/var/log:ro
+
+  siem-api:
+    image: siem-dashboard:latest
+    container_name: siem-api
+    # init_db() is idempotent; it makes sure the DB exists even if the API wins the startup race
+    command: ["sh", "-c", "python -c 'from database import init_db; init_db()' && uvicorn api:app --host 0.0.0.0 --port 8000"]
+    restart: unless-stopped
+    depends_on:
+      - siem-agent
     ports:
       - "8000:8000"
     environment:
       - SIEM_API_TOKEN=${SIEM_API_TOKEN:-}
-      - SIEM_LOG_PATH=/var/log/auth.log
     volumes:
       - ./data:/app/data
-      - /var/log:/var/log:ro
-    command: uvicorn api:app --host 0.0.0.0 --port 8000

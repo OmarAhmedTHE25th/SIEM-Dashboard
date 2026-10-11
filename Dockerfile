@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY . .
 
 ENV PYTHONUNBUFFERED=1
-ENV SIEM_API_TOKEN=
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port 8000"]
+# Default: dashboard + API. docker-compose overrides this per service
+# (siem-agent runs `python main.py`).
+CMD ["sh", "-c", "python -c 'from database import init_db; init_db()' && uvicorn api:app --host 0.0.0.0 --port 8000"]

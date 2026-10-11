@@ -1,12 +1,12 @@
-# ️ SIEM Dashboard
+# 🛡️ SIEM Dashboard
 
-A lightweight, real-time **Security Information and Event Management (SIEM)** system built from scratch in Python. It tails SSH authentication logs, normalizes them into structured events, and runs them through **two detection layers**: a set of **rule-based detectors** (brute force, successful-login-after-failures, off-hours logins, impossible travel) and an **Isolation Forest** ML model that scores each IP's behavior. Alerts are optionally enriched with GeoIP and reputation data, stored in SQLite, and served by a **FastAPI** backend to a live dark-mode monitoring dashboard.
+A lightweight, real-time **Security Information and Event Management (SIEM)** system built from scratch in Python. It tails SSH authentication logs, normalizes them into structured events, and runs them through **two detection layers**: a set of **rule-based detectors** (brute force, successful-login-after-failures, off-hours logins, impossible travel) and an **Isolation Forest** ML model that scores each IP's behavior. Alerts are optionally enriched with GeoIP and reputation data, stored in SQLite, and served by a **FastAPI** backend (optionally token-protected) to a live dark-mode monitoring dashboard. The whole stack can be run with Docker Compose.
 
 > Built as a hands-on cybersecurity + machine learning portfolio project to explore how real SIEM pipelines ingest, parse, correlate, enrich, and alert on log data.
 
 ---
 
-##  Table of Contents
+## 📑 Table of Contents
 
 - [Features](#-features)
 - [Architecture](#-architecture)
@@ -16,6 +16,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - [Tech Stack](#-tech-stack)
 - [Getting Started](#-getting-started)
 - [Usage](#-usage)
+- [Docker Deployment](#-docker-deployment)
 - [Running the Tests](#-running-the-tests)
 - [API Reference](#-api-reference)
 - [Database Schema](#-database-schema)
@@ -26,25 +27,29 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 
 ---
 
-##  Features
+## ✨ Features
 
 - **Real-time log tailing**: follows `auth.log` like `tail -f`, handles file truncation/rotation, partial lines, and even UTF-16 null bytes (PowerShell-generated logs).
-- **Log parsing & normalization**: turns raw `sshd` lines into structured events (timestamp, hostname, source IP, user, status). Supports both modern ISO-8601 timestamps and legacy syslog format, and handles `invalid user` lines.
+- **Log parsing & normalization**: turns raw `sshd` lines into structured events (timestamp, hostname, source IP, user, status). Supports both modern ISO-8601 timestamps and legacy syslog format, and handles `invalid user` lines. A narrow set of `sudo` session lines and Suricata alert lines is parsed too (see [Known Limitations](#-known-limitations)).
 - **Four rule-based detectors**: SSH brute force, successful login after many failures, off-hours logins, and impossible travel.
 - **ML-based detection**: an unsupervised **Isolation Forest** scores each IP's behavioral profile and flags statistical outliers, catching things simple thresholds miss (slow-and-low attacks, password spraying across many usernames).
 - **Score-based ML severity**: ML alerts are graded `CRITICAL` / `HIGH` / `MEDIUM` instead of a flat label.
 - **Alert cooldown**: ML alerts are rate-limited per IP (default 5 minutes) so one noisy attacker doesn't flood the feed.
 - **Optional IP enrichment**: cached GeoIP and AbuseIPDB reputation lookups are appended to alert descriptions. Private/reserved addresses are skipped, and provider failures never crash ingestion.
 - **Persistent storage**: SQLite with indexes tuned for dashboard queries and ML feature extraction.
-- **REST API**: FastAPI endpoints for stats and alerts.
-- **Live dashboard**: a Tailwind-styled single-page console with color-coded severity badges, refreshing every 2 seconds.
+- **REST API**: FastAPI endpoints for stats, alerts (filterable by status), grouped incidents, and acknowledge/suppress actions.
+- **Alert workflow**: every alert has a status (`active`, `acknowledged`, `suppressed`); suppressed alerts drop out of incident summaries.
+- **Incident grouping**: repeated alerts are rolled up per attacker IP + rule with counts and first/last-seen times.
+- **Optional token auth**: set `SIEM_API_TOKEN` and the dashboard and every API route require it.
+- **Live dashboard**: a Tailwind-styled single-page console with color-coded severity and status badges, a severity-distribution chart, a top-attacker-IPs chart, and an alert table, refreshing every 2 seconds.
+- **Docker support**: one image, two services (agent + API) wired together with `docker compose`.
 - **Configurable**: log path via CLI flag or env var, and every rule threshold tunable through environment variables.
-- **Unit tests**: 17 tests covering the parser, brute-force engine, extra rules, enrichment, and ML scoring.
+- **Unit tests**: 18 tests covering the parser, brute-force engine, extra rules, enrichment, and ML scoring.
 - **Offline training/ingestion**: bulk-load a historical log file (e.g. the Loghub `OpenSSH_2k.log` dataset) to bootstrap the ML model.
 
 ---
 
-## ️ Architecture
+## 🏗️ Architecture
 
 ```mermaid
 flowchart LR
@@ -69,7 +74,7 @@ flowchart LR
 
 ---
 
-##  How Detection Works
+## 🧠 How Detection Works
 
 ### 1. Rule-Based Detectors
 
@@ -143,7 +148,7 @@ Instead of hard-coded thresholds, the model learns what "normal" per-IP behavior
 
 ---
 
-##  IP Enrichment
+## 🌍 IP Enrichment
 
 `enrichment.py` adds context to alerts without ever being a hard dependency.
 
@@ -155,12 +160,12 @@ Instead of hard-coded thresholds, the model learns what "normal" per-IP behavior
 
 ---
 
-##  Project Structure
+## 📂 Project Structure
 
 ```
 SIEM-Dashboard/
 ├── main.py              # Live agent: tail log → parse → store → detect (rules + ML) → enrich
-├── parser.py            # Parses raw sshd auth lines into structured events
+├── parser.py            # Parses sshd (plus sudo and Suricata) log lines into structured events
 ├── engine.py            # BruteForceDetector (sliding-window rule engine)
 ├── detection_rules.py   # Success-after-failures, off-hours, and impossible-travel rules
 ├── enrichment.py        # Cached GeoIP / AbuseIPDB lookups
@@ -168,10 +173,13 @@ SIEM-Dashboard/
 ├── ingestionGen.py      # tail_file() generator: robust real-time file follower
 ├── ingestRealDB.py      # One-shot bulk ingestion of a historical log file
 ├── database.py          # SQLite schema, indexes, insert helpers
-├── api.py               # FastAPI app: serves dashboard + JSON endpoints
-├── dashboard.html       # Tailwind-based live monitoring console
+├── api.py               # FastAPI app: dashboard, JSON endpoints, optional token auth
+├── dashboard.html       # Tailwind + Chart.js live monitoring console
 ├── config.py            # Central paths (data dir, DB path, model path)
 ├── requirements.txt     # Python dependencies
+├── Dockerfile           # Image for both services (python:3.12-slim)
+├── docker-compose.yml   # siem-agent + siem-api sharing ./data
+├── .dockerignore
 └── tests/               # Unit tests (parser, engine, rules, enrichment, ML)
     ├── test_parser.py
     ├── test_engine.py
@@ -189,7 +197,7 @@ data/
 
 ---
 
-##  Tech Stack
+## 🧰 Tech Stack
 
 | Layer | Technology |
 |---|---|
@@ -199,15 +207,16 @@ data/
 | Storage | SQLite (`sqlite3` from the standard library) |
 | Enrichment | Standard library `urllib` (ipapi.co by default, optional AbuseIPDB) |
 | Testing | `unittest` (also runs under `pytest`) |
-| Frontend | Vanilla JS + Tailwind CSS (CDN) |
+| Frontend | Vanilla JS + Tailwind CSS + Chart.js (CDN) |
+| Deployment | Docker + Docker Compose |
 
 ---
 
-##  Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Python **3.12**
+- Python **3.12** (or Docker + Docker Compose; see [Docker Deployment](#-docker-deployment))
 - A Linux machine (or WSL/VM) with SSH logs at `/var/log/auth.log`, or any file containing `sshd` auth lines
 - Read access to the log file (you may need `sudo`)
 - Internet access is only needed if you want GeoIP / AbuseIPDB enrichment
@@ -229,7 +238,7 @@ pip install -r requirements.txt
 
 ---
 
-## ️ Usage
+## ▶️ Usage
 
 The system has three parts: **train the model**, **run the agent**, **run the dashboard**.
 
@@ -278,13 +287,59 @@ uvicorn api:app --reload --port 8000
 
 Open **http://localhost:8000** to see the live console.
 
+If `SIEM_API_TOKEN` is set, start uvicorn with it in the environment (`SIEM_API_TOKEN=change-me uvicorn api:app --port 8000`). The page itself is protected, so open `http://localhost:8000/?token=change-me` (a bare `http://localhost:8000` returns `401`). The dashboard then uses that token for its own API calls.
+
 ### Step 4: Generate some traffic
 
 Trigger some failed SSH logins against the monitored machine (only on systems you own) and watch alerts appear on the dashboard within ~2 seconds.
 
 ---
 
-##  Running the Tests
+## 🐳 Docker Deployment
+
+The compose file builds one image and runs it as **two services** that share `./data`:
+
+| Service | What it runs | Why separate |
+|---|---|---|
+| `siem-agent` | `python main.py`, tails the log, runs the detectors, writes events and alerts | Needs read access to the host's log directory |
+| `siem-api` | `uvicorn api:app` on port `8000` | Serves the dashboard and REST API; reads the shared SQLite file |
+
+```bash
+# Build and start both services
+docker compose up --build -d
+
+# Open the dashboard (add ?token=... if you enabled a token)
+# http://localhost:8000
+
+# Require a token for the dashboard and API
+SIEM_API_TOKEN=change-me docker compose up -d
+
+# Follow the agent's alert output
+docker compose logs -f siem-agent
+
+# Stop everything (alerts and events stay in ./data)
+docker compose down
+```
+
+**Train the ML model inside Docker** (the image doesn't include `*.log` files, so mount the dataset):
+
+```bash
+docker compose run --rm -v "$PWD/OpenSSH_2k.log:/app/OpenSSH_2k.log:ro" siem-agent \
+  sh -c "python ingestRealDB.py && python ml_engine.py"
+docker compose restart siem-agent      # reload the freshly trained model
+```
+
+Notes:
+
+- The agent mounts the host's `/var/log` **read-only** and watches `/var/log/auth.log` by default; override with `SIEM_LOG_PATH`. This works on Linux hosts, since Docker Desktop on macOS/Windows doesn't expose the host's auth log this way.
+- Compose passes through `SIEM_API_TOKEN` (API service) and `ABUSEIPDB_API_KEY` (agent). Put them in a `.env` file next to `docker-compose.yml` if you don't want them on the command line.
+- The API service runs `init_db()` before starting, so it never fails because the agent hasn't created the database yet.
+- Without a trained model the agent still runs, with the rule-based detectors only.
+- Files in `./data` are created by the container user (root), so you may need `sudo` to edit or delete them on the host.
+
+---
+
+## 🧪 Running the Tests
 
 ```bash
 python -m unittest discover -s tests
@@ -296,9 +351,22 @@ The suite covers the log parser (ISO and legacy formats, invalid users, malforme
 
 ---
 
-##  API Reference
+## 🔌 API Reference
 
 Base URL: `http://localhost:8000`
+
+### Authentication
+
+Authentication is **off by default**. When the `SIEM_API_TOKEN` environment variable is set on the API process, `GET /` and every `/api/*` route require the token, sent either way:
+
+- Header: `Authorization: Bearer <token>`
+- Query string: `?token=<token>` (convenient for opening the dashboard in a browser)
+
+A missing or wrong token returns `401 Unauthorized`.
+
+```bash
+curl -H "Authorization: Bearer change-me" http://localhost:8000/api/stats
+```
 
 ### `GET /`
 Serves `dashboard.html`.
@@ -315,27 +383,51 @@ Returns aggregate counters (total events, failed logins, total alerts, and disti
 }
 ```
 
-### `GET /api/alerts?limit=50`
-Returns the most recent alerts (newest first). `limit` defaults to `50`.
+### `GET /api/alerts?limit=50&status=active`
+Returns the most recent alerts (newest first). `limit` defaults to `50`. The optional `status` filter accepts `active`, `acknowledged`, or `suppressed`.
 
 ```json
 [
   {
+    "id": 42,
     "timestamp": "2026-10-10T19:13:47.907110+00:00",
     "rule_name": "SSH_BRUTE_FORCE",
     "severity": "HIGH",
     "attacker_ip": "203.0.113.42",
     "target_user": "root",
-    "description": "Observed 3 failed logins from 203.0.113.42 within 60.0s window. [GeoIP: Berlin, Germany]"
+    "description": "Observed 3 failed logins from 203.0.113.42 within 60.0s window. [GeoIP: Berlin, Germany]",
+    "status": "active"
   }
 ]
 ```
+
+### `GET /api/incidents?limit=10`
+Groups alerts by **attacker IP + rule** (suppressed alerts excluded) and returns the noisiest groups first.
+
+```json
+[
+  {
+    "attacker_ip": "203.0.113.42",
+    "rule_name": "SSH_BRUTE_FORCE",
+    "count": 7,
+    "first_seen": "2026-10-10T19:13:47+00:00",
+    "last_seen": "2026-10-10T20:02:11+00:00",
+    "suppressed_count": 0
+  }
+]
+```
+
+### `POST /api/alerts/{alert_id}/ack`
+Marks an alert `acknowledged`. Returns `{"status": "acknowledged", "alert_id": 42}`, or `404` if the alert doesn't exist.
+
+### `POST /api/alerts/{alert_id}/suppress`
+Marks an alert `suppressed` (hidden from incident summaries). Returns `{"status": "suppressed", "alert_id": 42}`, or `404` if the alert doesn't exist.
 
 Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ---
 
-##  Database Schema
+## 🗄️ Database Schema
 
 **`events`**: every parsed auth event
 
@@ -344,9 +436,9 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 | `id` | INTEGER PK | autoincrement |
 | `timestamp` | TEXT | ISO-8601 |
 | `hostname` | TEXT | |
-| `source_ip` | TEXT | indexed |
+| `source_ip` | TEXT | indexed; `local` for `sudo` session events |
 | `user` | TEXT | target username |
-| `status` | TEXT | `failed` or `success` |
+| `status` | TEXT | `failed` or `success` (event outcome, not the alert workflow status) |
 | `raw` | TEXT | original log line |
 
 **`alerts`**: every triggered detection
@@ -360,10 +452,11 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 | `attacker_ip` | TEXT | |
 | `target_user` | TEXT | |
 | `description` | TEXT | human-readable explanation, with enrichment info appended |
+| `status` | TEXT | alert workflow state: `active` (default), `acknowledged`, or `suppressed`; indexed |
 
 ---
 
-##  Configuration & Tuning
+## ⚙️ Configuration & Tuning
 
 ### Environment variables
 
@@ -380,6 +473,7 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 | `SIEM_GEOIP_CACHE_TTL` | Enrichment cache lifetime (seconds) | `3600` |
 | `SIEM_ENRICHMENT_TIMEOUT` | Per-request provider timeout (seconds) | `2.0` |
 | `ABUSEIPDB_API_KEY` | Enables AbuseIPDB reputation checks | unset (disabled) |
+| `SIEM_API_TOKEN` | Enables token auth for the dashboard and API (read by the API process) | unset (open access) |
 
 ### In-code settings
 
@@ -396,20 +490,23 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ---
 
-##  Known Limitations
+## ⚠️ Known Limitations
 
-- **SSH password auth only**: the parser matches `Failed password` / `Accepted password` from `sshd`. Key-based auth and other services are ignored, so the success-based rules only see password logins.
+- **Narrow log coverage**: the parser matches `Failed password` / `Accepted password` from `sshd`, a minimal `sudo` session pattern, and Suricata lines containing `ET `. Key-based SSH auth and other services are ignored, so the success-based rules only see password logins.
+- **Non-SSH events reuse the SSH event model**: `sudo` session lines become `success` events with source IP `local` (so they can trigger `OFF_HOURS_LOGIN` and feed the ML tracker as one pseudo-IP), and Suricata lines become `failed` events keyed on the first `IP:port` found, so they count toward failed-login stats and the brute-force rule.
 - **Legacy syslog year**: the legacy timestamp fallback hardcodes the year `2026` since classic syslog omits it.
 - **Timezone-naive rules**: legacy syslog timestamps carry no timezone, and `OFF_HOURS_LOGIN` judges the hour exactly as written in the log, so it follows the log's own timezone rather than a configured one.
 - **Enrichment sends IPs to a third party**: with the default settings, public source IPs are sent to ipapi.co (and to AbuseIPDB if you set a key). Point `SIEM_GEOIP_URL` at your own provider if that's a concern.
 - **Enrichment is synchronous**: failures are ignored, but a slow provider can delay processing by up to the timeout (2 s by default) the first time a new public IP is seen.
 - **Impossible travel is approximate**: GeoIP is city-level at best, and VPNs/proxies can trigger false positives.
 - **Training data quality**: `contamination=0.35` is tuned for a noisy historical sample, not for a clean production baseline.
-- **No auth on the API/dashboard**: it's meant for local use. Don't expose it to the internet as is.
+- **Simple shared-token auth**: one optional token, with no users, roles, or TLS. The `?token=` query-string option can end up in server logs and browser history, and the dashboard keeps the token in the browser's `localStorage`. Prefer the header, and put the app behind a reverse proxy with HTTPS before exposing it beyond localhost.
+- **Dashboard shows recent alerts only**: the table and both charts are built from the 20 most recent alerts, not the full history. Acknowledge/suppress and incident grouping are API-only for now (there are no buttons for them in the UI).
+- **Docker log access is Linux-only by default**: the agent container reads the host's `/var/log` through a read-only mount.
 
 ---
 
-## ️ Roadmap
+## 🗺️ Roadmap
 
 ### Completed
 
@@ -442,13 +539,13 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ---
 
-##  Disclaimer
+## 📜 Disclaimer
 
 This project is for **educational and defensive-security purposes only**. Only monitor systems and generate test traffic on machines you own or have explicit permission to test.
 
 ---
 
-##  Author
+## 👤 Author
 
 **Omar Ahmed**: Computer Engineering student, cybersecurity enthusiast.
 GitHub: [@OmarAhmedTHE25th](https://github.com/OmarAhmedTHE25th)
