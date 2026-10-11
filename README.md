@@ -1,8 +1,8 @@
-#  SIEM Dashboard
+# ️ SIEM Dashboard
 
-A lightweight, real-time **Security Information and Event Management (SIEM)** system built from scratch in Python. It tails SSH authentication logs, normalizes them into structured events, detects attacks using **two complementary engines** (a rule-based sliding-window detector and an **Isolation Forest** ML model), stores everything in SQLite, and exposes it through a **FastAPI** backend with a live dark-mode monitoring dashboard.
+A lightweight, real-time **Security Information and Event Management (SIEM)** system built from scratch in Python. It tails SSH authentication logs, normalizes them into structured events, and runs them through **two detection layers**: a set of **rule-based detectors** (brute force, successful-login-after-failures, off-hours logins, impossible travel) and an **Isolation Forest** ML model that scores each IP's behavior. Alerts are optionally enriched with GeoIP and reputation data, stored in SQLite, and served by a **FastAPI** backend to a live dark-mode monitoring dashboard.
 
-> Built as a hands-on cybersecurity + machine learning portfolio project to explore how real SIEM pipelines ingest, parse, correlate, and alert on log data.
+> Built as a hands-on cybersecurity + machine learning portfolio project to explore how real SIEM pipelines ingest, parse, correlate, enrich, and alert on log data.
 
 ---
 
@@ -11,10 +11,12 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - [Features](#-features)
 - [Architecture](#-architecture)
 - [How Detection Works](#-how-detection-works)
+- [IP Enrichment](#-ip-enrichment)
 - [Project Structure](#-project-structure)
 - [Tech Stack](#-tech-stack)
 - [Getting Started](#-getting-started)
 - [Usage](#-usage)
+- [Running the Tests](#-running-the-tests)
 - [API Reference](#-api-reference)
 - [Database Schema](#-database-schema)
 - [Configuration & Tuning](#-configuration--tuning)
@@ -27,41 +29,51 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 ##  Features
 
 - **Real-time log tailing**: follows `auth.log` like `tail -f`, handles file truncation/rotation, partial lines, and even UTF-16 null bytes (PowerShell-generated logs).
-- **Log parsing & normalization**: turns raw `sshd` lines into structured events (timestamp, hostname, source IP, user, status). Supports both modern ISO-8601 timestamps and legacy syslog format.
-- **Rule-based detection**: brute force plus successful-login-after-failures, impossible-travel, and off-hours login rules.
-- **Optional IP enrichment**: cached GeoIP and AbuseIPDB lookups never block ingestion and safely skip private/reserved addresses.
+- **Log parsing & normalization**: turns raw `sshd` lines into structured events (timestamp, hostname, source IP, user, status). Supports both modern ISO-8601 timestamps and legacy syslog format, and handles `invalid user` lines.
+- **Four rule-based detectors**: SSH brute force, successful login after many failures, off-hours logins, and impossible travel.
 - **ML-based detection**: an unsupervised **Isolation Forest** scores each IP's behavioral profile and flags statistical outliers, catching things simple thresholds miss (slow-and-low attacks, password spraying across many usernames).
+- **Score-based ML severity**: ML alerts are graded `CRITICAL` / `HIGH` / `MEDIUM` instead of a flat label.
 - **Alert cooldown**: ML alerts are rate-limited per IP (default 5 minutes) so one noisy attacker doesn't flood the feed.
+- **Optional IP enrichment**: cached GeoIP and AbuseIPDB reputation lookups are appended to alert descriptions. Private/reserved addresses are skipped, and provider failures never crash ingestion.
 - **Persistent storage**: SQLite with indexes tuned for dashboard queries and ML feature extraction.
 - **REST API**: FastAPI endpoints for stats and alerts.
-- **Live dashboard**: a Tailwind-styled single-page console that auto-refreshes every 2 seconds.
+- **Live dashboard**: a Tailwind-styled single-page console with color-coded severity badges, refreshing every 2 seconds.
+- **Configurable**: log path via CLI flag or env var, and every rule threshold tunable through environment variables.
+- **Unit tests**: 17 tests covering the parser, brute-force engine, extra rules, enrichment, and ML scoring.
 - **Offline training/ingestion**: bulk-load a historical log file (e.g. the Loghub `OpenSSH_2k.log` dataset) to bootstrap the ML model.
 
 ---
 
-##  Architecture
+## ️ Architecture
 
 ```mermaid
 flowchart LR
-    A[/var/log/auth.log/] -->|tail_file| B[parser.py<br/>parse_auth_line]
-    B -->|normalized event| C[(SQLite<br/>events)]
-    B --> D[engine.py<br/>BruteForceDetector]
-    B --> E[main.py<br/>RealtimeBehaviorTracker]
-    E -->|5 behavioral features| F[ml_engine.py<br/>AnomalyScorer<br/>Isolation Forest]
-    D -->|SSH_BRUTE_FORCE| G[(SQLite<br/>alerts)]
-    F -->|ML_ANOMALOUS_BEHAVIOR| G
-    G --> H[api.py<br/>FastAPI]
-    C --> H
-    H -->|JSON, polled every 2s| I[dashboard.html]
+    A[("auth.log")] -->|tail_file| B["parser.py<br/>parse_auth_line"]
+    B -->|normalized event| C[("SQLite: events")]
+    B --> D["engine.py<br/>BruteForceDetector"]
+    B --> E["detection_rules.py<br/>Success-after-failures<br/>Off-hours<br/>Impossible travel"]
+    B --> F["enrichment.py<br/>GeoIP / AbuseIPDB"]
+    F -->|coordinates| E
+    B --> G["main.py<br/>RealtimeBehaviorTracker"]
+    G -->|5 behavioral features| H["ml_engine.py<br/>AnomalyScorer<br/>Isolation Forest"]
+    D --> I[("SQLite: alerts")]
+    E --> I
+    H -->|cooldown + severity| I
+    F -.->|appended to descriptions| I
+    I --> J["api.py<br/>FastAPI"]
+    C --> J
+    J -->|JSON, polled every 2s| K["dashboard.html"]
 ```
 
-**Data flow in one sentence:** a log line is tailed → parsed into an event → saved → fed to both detectors → any alert is saved (ML alerts pass a per-IP cooldown first) → the API serves it → the dashboard polls and displays it.
+**Data flow in one sentence:** a log line is tailed → parsed into an event → saved → fed to the rule detectors and the ML scorer → any alert is enriched with GeoIP/reputation info and saved (ML alerts pass a per-IP cooldown first) → the API serves it → the dashboard polls and displays it.
 
 ---
 
 ##  How Detection Works
 
-### 1. Rule-Based: SSH Brute Force (`engine.py`)
+### 1. Rule-Based Detectors
+
+#### SSH Brute Force (`engine.py`)
 
 `BruteForceDetector` keeps a `deque` of failed-login timestamps **per source IP**.
 
@@ -76,6 +88,20 @@ flowchart LR
 | `window_seconds` | 60 seconds |
 | Rule name | `SSH_BRUTE_FORCE` |
 | Severity | `HIGH` |
+
+#### Streaming correlation rules (`detection_rules.py`)
+
+| Rule | Triggers when | Severity | Defaults |
+|---|---|---|---|
+| `SUCCESS_AFTER_MANY_FAILURES` | A successful login follows enough failures for the **same IP + user** inside a time window. Often means a brute-force attempt finally worked. | `HIGH` | 5 failures within 300 s |
+| `OFF_HOURS_LOGIN` | A **successful** login happens outside normal hours. Handles windows that cross midnight. | `MEDIUM` | 22:00 to 06:00 |
+| `IMPOSSIBLE_TRAVEL` | The same user logs in successfully from two locations that would require faster-than-plausible travel, based on GeoIP coordinates. | `HIGH` | Max 800 km/h, compared within 24 h |
+
+Details worth knowing:
+
+- Failures are cleared after a `SUCCESS_AFTER_MANY_FAILURES` alert, so a single success doesn't fire repeatedly.
+- `IMPOSSIBLE_TRAVEL` needs location data. It only works for public IPs where the GeoIP provider returned coordinates, and it tracks the last successful login **per user**. VPN and proxy users can cause false positives.
+- `OFF_HOURS_LOGIN` uses the hour **as written in the log timestamp**. ISO timestamps with an offset (e.g. `+03:00`) are judged in that local time, while a server logging in UTC will be judged in UTC.
 
 ### 2. ML-Based: Isolation Forest (`ml_engine.py`)
 
@@ -103,25 +129,29 @@ Instead of hard-coded thresholds, the model learns what "normal" per-IP behavior
 - `RealtimeBehaviorTracker` in `main.py` maintains an in-memory sliding history (last **50** events) per IP and computes the same five features on the fly.
 - Scoring only starts once an IP has **≥ 3 attempts**.
 - The model's `decision_function` score is compared against a threshold (default `0.05`); **lower score = more anomalous**.
-- Anomalies produce an `ML_ANOMALOUS_BEHAVIOR` alert with the score, failure rate, and spray count in the description. ML severity is score-based: `CRITICAL` at `<= -0.2`, `HIGH` below `0`, and `MEDIUM` below the anomaly threshold; non-anomalous scores map to `LOW`.
-- A **per-IP cooldown** (default 5 minutes) suppresses repeat ML alerts for an IP that was already flagged, so a single attacker doesn't generate an alert on every event.
+- Anomalies produce an `ML_ANOMALOUS_BEHAVIOR` alert with the score, failure rate, and spray count in the description.
+- A **per-IP cooldown** (default 5 minutes) suppresses repeat ML alerts for an IP that was already flagged.
 
-> 💡 **Why both?** Rules are fast, explainable, and predictable. ML catches the behaviors you didn't think to write a rule for. Running them side by side is how many production SIEMs work.
+**ML severity mapping** (`severity_from_score`):
 
-### 3. Additional streaming rules
+| Score | Severity |
+|---|---|
+| `<= -0.2` | `CRITICAL` |
+| `< 0` | `HIGH` |
+| `< threshold` (default 0.05) | `MEDIUM` |
+| otherwise | `LOW` (not an anomaly) |
 
-`SUCCESS_AFTER_MANY_FAILURES` (default 5 failures in 5 minutes) correlates failures
-for the same IP and user with a later success. `OFF_HOURS_LOGIN` (22:00–06:00)
-flags successful logins. `IMPOSSIBLE_TRAVEL` compares successive successful
-logins for a user using GeoIP coordinates (default maximum speed: 800 km/h).
-Tune with `SIEM_SUCCESS_AFTER_FAILURES`, `SIEM_FAILURE_CORRELATION_WINDOW`,
-`SIEM_OFF_HOURS_START`, `SIEM_OFF_HOURS_END`, `SIEM_IMPOSSIBLE_TRAVEL_KMH`,
-and `SIEM_IMPOSSIBLE_TRAVEL_WINDOW`.
+---
 
-GeoIP uses `SIEM_GEOIP_URL` (default `https://ipapi.co/{ip}/json/`) and
-`SIEM_ENRICHMENT_TIMEOUT` (default 2 seconds). Set `ABUSEIPDB_API_KEY` to
-enable AbuseIPDB reputation checks; lookups are cached for
-`SIEM_GEOIP_CACHE_TTL` seconds. Providers are optional and failures are ignored.
+##  IP Enrichment
+
+`enrichment.py` adds context to alerts without ever being a hard dependency.
+
+- **GeoIP**: country, city, and coordinates from a configurable provider (default `https://ipapi.co/{ip}/json/`). The coordinates also feed the impossible-travel rule.
+- **AbuseIPDB** (optional): set `ABUSEIPDB_API_KEY` to add the abuse confidence score.
+- **Cached**: results are cached per IP (default 1 hour), so repeated events don't trigger repeated provider calls.
+- **Safe by design**: private, loopback, link-local, and reserved addresses are never sent to a provider, and any lookup failure or timeout is swallowed so detection keeps running.
+- **Output**: alert descriptions get a suffix such as `[GeoIP: Berlin, Germany; AbuseIPDB confidence: 87%]`, or `[Private/reserved source IP]`.
 
 ---
 
@@ -129,21 +159,27 @@ enable AbuseIPDB reputation checks; lookups are cached for
 
 ```
 SIEM-Dashboard/
-├── main.py            # Live agent: tail log → parse → store → detect (rules + ML)
-├── parser.py          # Parses raw sshd auth lines into structured events
-├── engine.py          # BruteForceDetector (sliding-window rule engine)
-├── detection_rules.py # Streaming correlation rules
-├── enrichment.py      # Optional cached GeoIP/AbuseIPDB adapters
-├── ml_engine.py       # Feature extraction, Isolation Forest training, AnomalyScorer
-├── ingestionGen.py    # tail_file() generator: robust real-time file follower
-├── ingestRealDB.py    # One-shot bulk ingestion of a historical log file
-├── database.py        # SQLite schema, indexes, insert helpers
-├── api.py             # FastAPI app: serves dashboard + JSON endpoints
-├── dashboard.html     # Tailwind-based live monitoring console
-└── config.py          # Central paths (data dir, DB path, model path)
+├── main.py              # Live agent: tail log → parse → store → detect (rules + ML) → enrich
+├── parser.py            # Parses raw sshd auth lines into structured events
+├── engine.py            # BruteForceDetector (sliding-window rule engine)
+├── detection_rules.py   # Success-after-failures, off-hours, and impossible-travel rules
+├── enrichment.py        # Cached GeoIP / AbuseIPDB lookups
+├── ml_engine.py         # Feature extraction, Isolation Forest training, AnomalyScorer, severity mapping
+├── ingestionGen.py      # tail_file() generator: robust real-time file follower
+├── ingestRealDB.py      # One-shot bulk ingestion of a historical log file
+├── database.py          # SQLite schema, indexes, insert helpers
+├── api.py               # FastAPI app: serves dashboard + JSON endpoints
+├── dashboard.html       # Tailwind-based live monitoring console
+├── config.py            # Central paths (data dir, DB path, model path)
+├── requirements.txt     # Python dependencies
+└── tests/               # Unit tests (parser, engine, rules, enrichment, ML)
+    ├── test_parser.py
+    ├── test_engine.py
+    ├── test_detection_rules.py
+    └── test_ml_engine.py
 ```
 
-At runtime a `data/` directory is auto-created containing:
+At runtime a `data/` directory is auto-created (and git-ignored) containing:
 
 ```
 data/
@@ -161,6 +197,8 @@ data/
 | Machine Learning | scikit-learn (IsolationForest), pandas, NumPy, joblib |
 | Backend / API | FastAPI + Uvicorn |
 | Storage | SQLite (`sqlite3` from the standard library) |
+| Enrichment | Standard library `urllib` (ipapi.co by default, optional AbuseIPDB) |
+| Testing | `unittest` (also runs under `pytest`) |
 | Frontend | Vanilla JS + Tailwind CSS (CDN) |
 
 ---
@@ -169,9 +207,10 @@ data/
 
 ### Prerequisites
 
-- Python **3.10 or newer**
+- Python **3.12**
 - A Linux machine (or WSL/VM) with SSH logs at `/var/log/auth.log`, or any file containing `sshd` auth lines
 - Read access to the log file (you may need `sudo`)
+- Internet access is only needed if you want GeoIP / AbuseIPDB enrichment
 
 ### Installation
 
@@ -185,18 +224,18 @@ python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
 # 3. Install dependencies
-pip install fastapi uvicorn scikit-learn pandas numpy joblib
+pip install -r requirements.txt
 ```
 
 ---
 
-## Usage
+## ️ Usage
 
 The system has three parts: **train the model**, **run the agent**, **run the dashboard**.
 
 ### Step 1: Bootstrap the ML model (recommended)
 
-The ML detector needs a trained model. Without one, `AnomalyScorer.is_ready` stays `False` and only the rule-based detector runs.
+The ML detector needs a trained model. Without one, `AnomalyScorer.is_ready` stays `False` and only the rule-based detectors run.
 
 Download a labeled-style SSH log sample (for example `OpenSSH_2k.log` from the [Loghub](https://github.com/logpai/loghub) dataset), place it in the project root, then:
 
@@ -205,20 +244,29 @@ python ingestRealDB.py     # parses the log and fills data/siem.db
 python ml_engine.py        # trains the Isolation Forest and saves the model
 ```
 
->  The training step needs **at least 5 distinct source IPs** in the events table.
+> ⚠️ The training step needs **at least 5 distinct source IPs** in the events table.
 
 ### Step 2: Start the live agent
 
 ```bash
+# Default: watches /var/log/auth.log
 sudo python main.py
+
+# Custom log file via CLI flag
+python main.py --log-path /path/to/auth.log
+
+# Or via environment variable
+SIEM_LOG_PATH=/path/to/auth.log python main.py
 ```
+
+Log path priority: `--log-path` / `-l` flag → `SIEM_LOG_PATH` env var → `/var/log/auth.log`.
 
 The agent will:
 1. Initialize the database (`init_db()`).
-2. Load the trained model.
-3. Tail `/var/log/auth.log` and process each new `sshd` line in real time.
+2. Load the trained model (and warn if it's missing).
+3. Tail the log file and process each new `sshd` line in real time.
 
-Console output stays quiet during normal operation and prints `[RULE ALERT]` or `[ML ALERT]` whenever a detector fires. If the model file is missing, the agent warns you at startup and runs with the rule-based detector only.
+Console output stays quiet during normal operation and prints `[RULE ALERT]` or `[ML ALERT]` whenever a detector fires.
 
 ### Step 3: Start the dashboard
 
@@ -236,7 +284,19 @@ Trigger some failed SSH logins against the monitored machine (only on systems yo
 
 ---
 
-## 🔌 API Reference
+##  Running the Tests
+
+```bash
+python -m unittest discover -s tests
+# or, if you have pytest installed
+pytest
+```
+
+The suite covers the log parser (ISO and legacy formats, invalid users, malformed lines), the brute-force window logic, the three extra rules, enrichment caching and private-IP handling, and ML scoring/severity mapping.
+
+---
+
+##  API Reference
 
 Base URL: `http://localhost:8000`
 
@@ -266,7 +326,7 @@ Returns the most recent alerts (newest first). `limit` defaults to `50`.
     "severity": "HIGH",
     "attacker_ip": "203.0.113.42",
     "target_user": "root",
-    "description": "Observed 3 failed logins from 203.0.113.42 within 60.0s window."
+    "description": "Observed 3 failed logins from 203.0.113.42 within 60.0s window. [GeoIP: Berlin, Germany]"
   }
 ]
 ```
@@ -275,7 +335,7 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ---
 
-## 🗄️ Database Schema
+##  Database Schema
 
 **`events`**: every parsed auth event
 
@@ -295,19 +355,36 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 |---|---|---|
 | `id` | INTEGER PK | autoincrement |
 | `timestamp` | TEXT | indexed |
-| `rule_name` | TEXT | `SSH_BRUTE_FORCE` or `ML_ANOMALOUS_BEHAVIOR` |
-| `severity` | TEXT | `HIGH` for rule alerts; ML score-based `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW` |
+| `rule_name` | TEXT | `SSH_BRUTE_FORCE`, `SUCCESS_AFTER_MANY_FAILURES`, `OFF_HOURS_LOGIN`, `IMPOSSIBLE_TRAVEL`, or `ML_ANOMALOUS_BEHAVIOR` |
+| `severity` | TEXT | `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW` (rules use fixed levels; ML is score-based) |
 | `attacker_ip` | TEXT | |
 | `target_user` | TEXT | |
-| `description` | TEXT | human-readable explanation |
+| `description` | TEXT | human-readable explanation, with enrichment info appended |
 
 ---
 
-## Configuration & Tuning
+##  Configuration & Tuning
+
+### Environment variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `SIEM_LOG_PATH` | Log file to monitor (overridden by `--log-path`) | `/var/log/auth.log` |
+| `SIEM_SUCCESS_AFTER_FAILURES` | Failures needed before a success is suspicious | `5` |
+| `SIEM_FAILURE_CORRELATION_WINDOW` | Window for that correlation (seconds) | `300` |
+| `SIEM_OFF_HOURS_START` | Start of off-hours (hour, 0-23) | `22` |
+| `SIEM_OFF_HOURS_END` | End of off-hours (hour, 0-23) | `6` |
+| `SIEM_IMPOSSIBLE_TRAVEL_KMH` | Max plausible travel speed | `800` |
+| `SIEM_IMPOSSIBLE_TRAVEL_WINDOW` | How far back to compare logins (seconds) | `86400` |
+| `SIEM_GEOIP_URL` | GeoIP provider URL template (`{ip}` placeholder) | `https://ipapi.co/{ip}/json/` |
+| `SIEM_GEOIP_CACHE_TTL` | Enrichment cache lifetime (seconds) | `3600` |
+| `SIEM_ENRICHMENT_TIMEOUT` | Per-request provider timeout (seconds) | `2.0` |
+| `ABUSEIPDB_API_KEY` | Enables AbuseIPDB reputation checks | unset (disabled) |
+
+### In-code settings
 
 | What | Where | Default |
 |---|---|---|
-| Log file to monitor | `LOG_PATH` in `main.py` | `/var/log/auth.log` |
 | Data directory / DB / model paths | `config.py` | `./data/` |
 | Brute-force threshold & window | `BruteForceDetector(...)` in `main.py` | `3` / `60s` |
 | ML anomaly sensitivity | `AnomalyScorer(score_threshold=...)` | `0.05` (raise = more alerts) |
@@ -321,26 +398,29 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ##  Known Limitations
 
-- **SSH password auth only**: the parser matches `Failed password` / `Accepted password` from `sshd`. Key-based auth, invalid-user lines without a password message, and other services are ignored.
+- **SSH password auth only**: the parser matches `Failed password` / `Accepted password` from `sshd`. Key-based auth and other services are ignored, so the success-based rules only see password logins.
 - **Legacy syslog year**: the legacy timestamp fallback hardcodes the year `2026` since classic syslog omits it.
-- **Hardcoded log path**: `LOG_PATH` is a constant in `main.py`; Windows or custom log locations require editing it.
+- **Timezone-naive rules**: legacy syslog timestamps carry no timezone, and `OFF_HOURS_LOGIN` judges the hour exactly as written in the log, so it follows the log's own timezone rather than a configured one.
+- **Enrichment sends IPs to a third party**: with the default settings, public source IPs are sent to ipapi.co (and to AbuseIPDB if you set a key). Point `SIEM_GEOIP_URL` at your own provider if that's a concern.
+- **Enrichment is synchronous**: failures are ignored, but a slow provider can delay processing by up to the timeout (2 s by default) the first time a new public IP is seen.
+- **Impossible travel is approximate**: GeoIP is city-level at best, and VPNs/proxies can trigger false positives.
 - **Training data quality**: `contamination=0.35` is tuned for a noisy historical sample, not for a clean production baseline.
 - **No auth on the API/dashboard**: it's meant for local use. Don't expose it to the internet as is.
 
 ---
 
-##  Roadmap
+## ️ Roadmap
 
-- [ ] Add `requirements.txt`
+- [x] Add `requirements.txt`
 - [x] Fix `failed_logins` stat in `/api/stats`
 - [x] Alert cooldown for ML alerts
-- [ ] Configurable log path via CLI args or env vars
+- [x] Configurable log path via CLI args or env vars
 - [x] More detection rules (successful login after many failures, impossible travel, off-hours logins)
 - [x] IP enrichment (GeoIP, reputation lookup)
 - [x] Alert severity levels based on ML score
+- [x] Unit tests for the parser and detectors
 - [ ] Dashboard charts (attacks over time, top attacker IPs, targeted usernames)
 - [ ] Automatic periodic model retraining
-- [ ] Unit tests for the parser and detectors
 - [ ] Docker support
 
 ---
@@ -351,7 +431,7 @@ This project is for **educational and defensive-security purposes only**. Only m
 
 ---
 
-## 👤 Author
+##  Author
 
 **Omar Ahmed**: Computer Engineering student, cybersecurity enthusiast.
 GitHub: [@OmarAhmedTHE25th](https://github.com/OmarAhmedTHE25th)
