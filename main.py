@@ -4,6 +4,12 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from parser import parse_auth_line
 from engine import BruteForceDetector
+from detection_rules import (
+    SuccessfulAfterFailuresDetector,
+    ImpossibleTravelDetector,
+    OffHoursLoginDetector,
+)
+from enrichment import IPEnricher
 from ingestionGen import tail_file
 from database import init_db, insert_event, insert_alert
 from ml_engine import AnomalyScorer, severity_from_score
@@ -83,6 +89,10 @@ class RealtimeBehaviorTracker:
 if __name__ == "__main__":
     init_db()
     rule_detector = BruteForceDetector(threshold=3, window_seconds=60)
+    success_after_failures = SuccessfulAfterFailuresDetector()
+    impossible_travel = ImpossibleTravelDetector()
+    off_hours = OffHoursLoginDetector()
+    ip_enricher = IPEnricher()
     ml_scorer = AnomalyScorer()
     tracker = RealtimeBehaviorTracker()
     last_ml_alert = {}
@@ -100,10 +110,18 @@ if __name__ == "__main__":
         insert_event(event)
 
 
-        rule_alert = rule_detector.process_event(event)
-        if rule_alert:
-            insert_alert(rule_alert)
-            print(f"[RULE ALERT] {rule_alert['rule_name']} from {rule_alert['attacker_ip']}")
+        rule_alerts = [rule_detector.process_event(event),
+                       success_after_failures.process_event(event),
+                       off_hours.process_event(event)]
+        # GeoIP/reputation is best-effort; the travel rule consumes coordinates.
+        # The cache keeps repeated events from causing repeated provider calls.
+        location = ip_enricher.lookup(event["source_ip"])
+        rule_alerts.append(impossible_travel.process_event(event, location))
+        for rule_alert in rule_alerts:
+            if rule_alert:
+                rule_alert["description"] += f" [{ip_enricher.describe(location)}]"
+                insert_alert(rule_alert)
+                print(f"[RULE ALERT] {rule_alert['rule_name']} from {rule_alert['attacker_ip']}")
 
 
         features = tracker.add_and_extract(event)
@@ -127,7 +145,12 @@ if __name__ == "__main__":
                     "severity": severity_from_score(score, ml_scorer.threshold),
                     "attacker_ip": ip,
                     "target_user": event["user"],
-                    "description": f"IsolationForest outlier detected (Score: {score:.3f}, FailRate: {features['failure_rate']:.2f}, SprayCount: {features['unique_users']})"
+                    "description": (
+                        f"IsolationForest outlier detected (Score: {score:.3f}, "
+                        f"FailRate: {features['failure_rate']:.2f}, "
+                        f"SprayCount: {features['unique_users']}) "
+                        f"[{ip_enricher.describe(location)}]"
+                    )
                 }
                 insert_alert(ml_alert)
                 print(f"[ML ALERT] Anomaly from {ip} (Score: {score:.3f})")
