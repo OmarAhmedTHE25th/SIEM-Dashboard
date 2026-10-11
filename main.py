@@ -1,3 +1,5 @@
+import argparse
+import os
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from parser import parse_auth_line
@@ -6,9 +8,28 @@ from ingestionGen import tail_file
 from database import init_db, insert_event, insert_alert
 from ml_engine import AnomalyScorer
 
-LOG_PATH = "/var/log/auth.log"
+DEFAULT_LOG_PATH = "/var/log/auth.log"
 ML_ALERT_COOLDOWN = timedelta(minutes=5)
 
+
+def resolve_log_path() -> str:
+    parser = argparse.ArgumentParser(description="SIEM Real-Time Ingestion and Anomaly Detection Engine")
+    parser.add_argument(
+        "--log-path",
+        "-l",
+        type=str,
+        default=None,
+        help=f"Path to the authentication log file (default: $SIEM_LOG_PATH or {DEFAULT_LOG_PATH})"
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.log_path:
+        return args.log_path
+
+    return os.getenv("SIEM_LOG_PATH", DEFAULT_LOG_PATH)
+
+
+LOG_PATH = resolve_log_path()
 class RealtimeBehaviorTracker:
     """Tracks per-IP operational metrics in memory for real-time ML scoring."""
 
@@ -70,6 +91,7 @@ if __name__ == "__main__":
     if not ml_scorer.is_ready:
         print("[!] WARNING: ML model not loaded. Run `python ml_engine.py` to train it. Rules only for now.")
 
+    # Monitors logs; triggers rule-based and ML-driven security alerts
     for raw_line in tail_file(LOG_PATH):
         event = parse_auth_line(raw_line)
         if not event:
