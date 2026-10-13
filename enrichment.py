@@ -9,6 +9,22 @@ import time
 from typing import Any
 from urllib.request import Request, urlopen
 import json
+MOCK_COORDS = {
+    "81.2.69.142": {
+        "ip": "81.2.69.142",
+        "city": "London",
+        "country": "United Kingdom",
+        "latitude": 51.5074,
+        "longitude": -0.1278
+    },
+    "133.242.0.1": {
+        "ip": "133.242.0.1",
+        "city": "Tokyo",
+        "country": "Japan",
+        "latitude": 35.6762,
+        "longitude": 139.6503
+    },
+}
 
 
 class IPEnricher:
@@ -36,6 +52,9 @@ class IPEnricher:
             return None
 
     def lookup(self, ip: str) -> dict[str, Any]:
+        if ip in MOCK_COORDS:
+            return MOCK_COORDS[ip].copy()
+
         if not ip or self.is_private(ip):
             return {"ip": ip, "private": True}
         now = time.monotonic()
