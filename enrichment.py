@@ -52,6 +52,7 @@ class IPEnricher:
             return None
 
     def lookup(self, ip: str) -> dict[str, Any]:
+        """Resolves IP geolocation and abuse metrics with caching"""
         if ip in MOCK_COORDS:
             return MOCK_COORDS[ip].copy()
 
