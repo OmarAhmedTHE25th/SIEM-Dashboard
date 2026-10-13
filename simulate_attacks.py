@@ -1,10 +1,10 @@
 import time
 from datetime import datetime, timezone, timedelta
-from config import BASE_DIR
+import os
 
 from pathlib import Path
 
-TARGET_LOG = Path("/var/log/auth.log")
+TARGET_LOG = Path(os.getenv("SIEM_LOG_PATH", "/var/log/auth.log"))
 
 
 def write_log(line: str):
@@ -33,7 +33,7 @@ def test_off_hours():
 
 # ==========================================
 # 2. SCENARIO: IMPOSSIBLE TRAVEL
-# (Needs public IPs so ipapi.co resolves real coordinates)
+# (Uses the London/Tokyo demo IP pair; tests inject their offline coordinates)
 # ==========================================
 def test_impossible_travel():
     print("\n--- Triggering IMPOSSIBLE_TRAVEL ---")

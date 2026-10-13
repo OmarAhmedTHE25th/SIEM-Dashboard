@@ -42,6 +42,26 @@ class DetectionRuleTests(unittest.TestCase):
 
 
 class EnrichmentTests(unittest.TestCase):
+    def test_injected_provider_supplies_offline_coordinates(self):
+        locations = {
+            "81.2.69.142": {
+                "city": "London",
+                "country": "United Kingdom",
+                "latitude": 51.5074,
+                "longitude": -0.1278,
+            },
+            "133.242.0.1": {
+                "city": "Tokyo",
+                "country": "Japan",
+                "latitude": 35.6762,
+                "longitude": 139.6503,
+            },
+        }
+        enricher = IPEnricher(geoip_provider=locations.get)
+
+        self.assertEqual(enricher.lookup("81.2.69.142")["city"], "London")
+        self.assertEqual(enricher.lookup("133.242.0.1")["city"], "Tokyo")
+
     def test_private_addresses_do_not_call_provider(self):
         enricher = IPEnricher()
         with patch.object(enricher, "_get_json") as lookup:

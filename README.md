@@ -35,7 +35,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - **ML-based detection**: an unsupervised **Isolation Forest** scores each IP's behavioral profile and flags statistical outliers, catching things simple thresholds miss (slow-and-low attacks, password spraying across many usernames).
 - **Score-based ML severity**: ML alerts are graded `CRITICAL` / `HIGH` / `MEDIUM` instead of a flat label.
 - **Alert cooldown**: ML alerts are rate-limited per IP (default 5 minutes) so one noisy attacker doesn't flood the feed.
-- **Optional IP enrichment**: cached GeoIP and AbuseIPDB reputation lookups are appended to alert descriptions. Private/reserved addresses are skipped, and provider failures never crash ingestion.
+- **Optional IP enrichment**: cached GeoIP and AbuseIPDB reputation lookups are appended to alert descriptions. Private/reserved addresses are skipped, and provider failures never crash ingestion. Tests inject deterministic London/Tokyo GeoIP data so the impossible-travel scenario can run offline.
 - **Persistent storage**: SQLite with indexes tuned for dashboard queries and ML feature extraction.
 - **REST API**: FastAPI endpoints for stats, alerts (filterable by status), grouped incidents, and acknowledge/suppress actions.
 - **Alert workflow**: every alert has a status (`active`, `acknowledged`, `suppressed`); suppressed alerts drop out of incident summaries.
@@ -206,7 +206,7 @@ data/
 | Machine Learning | scikit-learn (IsolationForest), pandas, NumPy, joblib |
 | Backend / API | FastAPI + Uvicorn |
 | Storage | SQLite (`sqlite3` from the standard library) |
-| Enrichment | Standard library `urllib` (ipapi.co by default, optional AbuseIPDB) |
+| Enrichment | Standard library `urllib` (ipapi.co by default, optional AbuseIPDB; injectable providers for offline tests) |
 | Testing | `unittest` (also runs under `pytest`) |
 | Frontend | Vanilla JS + Tailwind CSS + Chart.js (CDN) |
 | Deployment | Docker + Docker Compose |
@@ -293,8 +293,8 @@ If `SIEM_API_TOKEN` is set, start uvicorn with it in the environment (`SIEM_API_
 ### Step 4: Generate test scenarios (optional)
 
 For a repeatable local demonstration, `simulate_attacks.py` appends synthetic entries to
-`/var/log/auth.log`. Run it on a test machine where you have permission to write to the
-monitored log:
+`/var/log/auth.log` (or `SIEM_LOG_PATH`). Run it on a test machine where you have permission
+to write to the monitored log:
 
 ```bash
 sudo python simulate_attacks.py
@@ -303,15 +303,17 @@ sudo python simulate_attacks.py
 The script exercises these scenarios in sequence:
 
 - `OFF_HOURS_LOGIN`
-- `IMPOSSIBLE_TRAVEL` (requires public IP GeoIP lookups)
+- `IMPOSSIBLE_TRAVEL` (the test suite uses an injected offline provider for the London/Tokyo IPs)
 - `SUCCESS_AFTER_MANY_FAILURES`
 - a `sudo` session event
 - `ML_ANOMALOUS_BEHAVIOR` (a regular password-spray pattern)
 
 It does not make network connections to attack systems or perform real authentication;
 it only writes crafted log lines for the running agent to process. Watch the resulting
-alerts appear on the dashboard within approximately 2 seconds. If the agent is monitoring
-a different file, adapt `TARGET_LOG` in the script before running it.
+alerts appear on the dashboard within approximately 2 seconds. Set `SIEM_LOG_PATH` to use
+a different file. The live agent uses its configured GeoIP provider; the deterministic
+London/Tokyo data is kept in the tests and injected into `IPEnricher` there, so the
+offline impossible-travel check never depends on a real provider.
 
 ---
 

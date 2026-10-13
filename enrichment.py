@@ -6,34 +6,24 @@ log ingestion or detection.
 import ipaddress
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.request import Request, urlopen
 import json
-MOCK_COORDS = {
-    "81.2.69.142": {
-        "ip": "81.2.69.142",
-        "city": "London",
-        "country": "United Kingdom",
-        "latitude": 51.5074,
-        "longitude": -0.1278
-    },
-    "133.242.0.1": {
-        "ip": "133.242.0.1",
-        "city": "Tokyo",
-        "country": "Japan",
-        "latitude": 35.6762,
-        "longitude": 139.6503
-    },
-}
 
 
 class IPEnricher:
-    def __init__(self, cache_ttl: int | None = None, timeout: float | None = None):
+    def __init__(
+        self,
+        cache_ttl: int | None = None,
+        timeout: float | None = None,
+        geoip_provider: Callable[[str], dict[str, Any] | None] | None = None,
+    ):
         self.cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.cache_ttl = cache_ttl or int(os.getenv("SIEM_GEOIP_CACHE_TTL", "3600"))
         self.timeout = timeout or float(os.getenv("SIEM_ENRICHMENT_TIMEOUT", "2.0"))
         self.geoip_url = os.getenv("SIEM_GEOIP_URL", "https://ipapi.co/{ip}/json/")
         self.abuse_key = os.getenv("ABUSEIPDB_API_KEY")
+        self.geoip_provider = geoip_provider
 
     @staticmethod
     def is_private(ip: str) -> bool:
@@ -53,9 +43,6 @@ class IPEnricher:
 
     def lookup(self, ip: str) -> dict[str, Any]:
         """Resolves IP geolocation and abuse metrics with caching"""
-        if ip in MOCK_COORDS:
-            return MOCK_COORDS[ip].copy()
-
         if not ip or self.is_private(ip):
             return {"ip": ip, "private": True}
         now = time.monotonic()
@@ -64,7 +51,11 @@ class IPEnricher:
             return cached[1].copy()
 
         result: dict[str, Any] = {"ip": ip}
-        geo = self._get_json(self.geoip_url.format(ip=ip))
+        geo = (
+            self.geoip_provider(ip)
+            if self.geoip_provider is not None
+            else self._get_json(self.geoip_url.format(ip=ip))
+        )
         if geo:
             # Providers use both ipapi and GeoIP-style field names.
             for dest, names in {
