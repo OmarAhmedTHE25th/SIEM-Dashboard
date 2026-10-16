@@ -165,24 +165,7 @@
         options: { plugins: { legend: { labels: { color: '#e2e8f0' } } }, maintainAspectRatio: false }
       });
     }
-
-    function renderAttackerChart(alerts) {
-      const counts = {};
-      alerts.forEach(a => {
-        counts[a.attacker_ip] = (counts[a.attacker_ip] || 0) + 1;
-      });
-      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
-      const labels = top.map(([ip]) => ip);
-      const values = top.map(([, count]) => count);
-
-      if (attackerChart) {
-        attackerChart.data.labels = labels;
-        attackerChart.data.datasets[0].data = values;
-        attackerChart.update();
-        return;
-      }
-
-      function renderCoverage(coverage) {
+function renderCoverage(coverage) {
         const tactics = coverage.tactics || [];
         const labels = tactics.map(item => item.tactic);
         const values = tactics.map(item => item.count);
@@ -206,6 +189,23 @@
             <td class="py-2 px-3">${escapeHtml(item.alert_count)}</td>
           </tr>`).join('');
       }
+    function renderAttackerChart(alerts) {
+      const counts = {};
+      alerts.forEach(a => {
+        counts[a.attacker_ip] = (counts[a.attacker_ip] || 0) + 1;
+      });
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      const labels = top.map(([ip]) => ip);
+      const values = top.map(([, count]) => count);
+
+      if (attackerChart) {
+        attackerChart.data.labels = labels;
+        attackerChart.data.datasets[0].data = values;
+        attackerChart.update();
+        return;
+      }
+
+
 
       attackerChart = new Chart(document.getElementById('attackerChart'), {
         type: 'bar',
