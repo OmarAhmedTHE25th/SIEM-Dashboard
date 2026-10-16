@@ -1,0 +1,2 @@
+2026-10-10T03:00:00+00:00 server1 sshd[1]: Accepted password for alice from 81.2.69.142 port 22 ssh2
+2026-10-10T04:00:00+00:00 server1 sshd[1]: Accepted password for alice from 133.242.0.1 port 22 ssh2

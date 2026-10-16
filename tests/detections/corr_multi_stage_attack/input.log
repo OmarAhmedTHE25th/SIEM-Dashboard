@@ -1,0 +1,6 @@
+2026-10-10T12:00:00+00:00 server1 suricata: ET SCAN suspicious traffic 192.0.2.60:4444
+2026-10-10T12:01:00+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.60 port 22 ssh2
+2026-10-10T12:01:01+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.60 port 22 ssh2
+2026-10-10T12:01:02+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.60 port 22 ssh2
+2026-10-10T12:01:03+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.60 port 22 ssh2
+2026-10-10T12:01:04+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.60 port 22 ssh2

@@ -1,0 +1,6 @@
+2026-10-10T12:00:00+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.40 port 22 ssh2
+2026-10-10T12:00:01+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.40 port 22 ssh2
+2026-10-10T12:00:02+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.40 port 22 ssh2
+2026-10-10T12:00:03+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.40 port 22 ssh2
+2026-10-10T12:00:04+00:00 server1 sshd[1]: Failed password for admin from 192.0.2.40 port 22 ssh2
+2026-10-10T12:00:05+00:00 server1 sshd[1]: Accepted password for admin from 192.0.2.40 port 22 ssh2

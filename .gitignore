@@ -21,6 +21,7 @@ data/
 
 # Logs
 *.log
+!tests/detections/**/input.log
 
 # OS
 .DS_Store
