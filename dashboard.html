@@ -3,6 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <title>SIEM Monitoring Console</title>
+  <script>
+  function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[c]));
+}
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
@@ -36,7 +47,7 @@
       </div>
     </header>
 
-    <section class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <section class="grid grid-cols-1 md:grid-cols-4 gap-4">
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
         <p class="text-xs font-medium uppercase tracking-wider text-slate-400">Total Ingested Events</p>
         <p id="stat-total" class="text-3xl font-mono font-bold text-white mt-2">0</p>
@@ -48,6 +59,10 @@
       <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
         <p class="text-xs font-medium uppercase tracking-wider text-rose-500">Triggered Incidents</p>
         <p id="stat-alerts" class="text-3xl font-mono font-bold text-rose-400 mt-2">0</p>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-5">
+        <p class="text-xs font-medium uppercase tracking-wider text-sky-400">Open Cases</p>
+        <p id="stat-cases" class="text-3xl font-mono font-bold text-sky-300 mt-2">0</p>
       </div>
     </section>
 
@@ -181,7 +196,7 @@
 
     function authHeaders() {
       const token = localStorage.getItem('siem_api_token') || new URLSearchParams(window.location.search).get('token');
-      return token ? { 'Authorization': `Bearer ${token}` } : {};
+      return token ? { 'Authorization': 'Bearer ' + token } : {};
     }
 
     async function updateDashboard() {
@@ -198,6 +213,11 @@
         document.getElementById('stat-total').textContent = stats.total_events;
         document.getElementById('stat-failed').textContent = stats.failed_logins;
         document.getElementById('stat-alerts').textContent = stats.total_alerts;
+        const metricsRes = await fetch(apiUrl('/api/metrics'), { headers: authHeaders() });
+        if (metricsRes.ok) {
+          const metrics = await metricsRes.json();
+          document.getElementById('stat-cases').textContent = metrics.open_cases ?? 0;
+        }
 
         const alertsRes = await fetch(apiUrl('/api/alerts?limit=20'), { headers: authHeaders() });
         const alerts = await alertsRes.json();
@@ -212,24 +232,24 @@
         }
 
         tbody.innerHTML = alerts.map(a => `
-          <tr class="hover:bg-slate-800/50 transition">
-            <td class="py-3 px-3 text-slate-400">${(a.timestamp || '').replace('T', ' ').substring(0, 19)}</td>
-            <td class="py-3 px-3 text-rose-300 font-bold">${a.rule_name}</td>
-            <td class="py-3 px-3">
-              <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.severity] || severityClasses.LOW}">
-                ${a.severity}
-              </span>
-            </td>
-            <td class="py-3 px-3 text-amber-200">${a.attacker_ip}</td>
-            <td class="py-3 px-3 text-slate-300">${a.target_user}</td>
-            <td class="py-3 px-3">
-              <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.status] || severityClasses.active}">
-                ${a.status || 'active'}
-              </span>
-            </td>
-            <td class="py-3 px-3 text-slate-400">${a.description}</td>
-          </tr>
-        `).join('');
+  <tr class="hover:bg-slate-800/50 transition">
+    <td class="py-3 px-3 text-slate-400">${escapeHtml((a.timestamp || '').replace('T', ' ').substring(0, 19))}</td>
+    <td class="py-3 px-3 text-rose-300 font-bold">${escapeHtml(a.rule_name)}</td>
+    <td class="py-3 px-3">
+      <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.severity] || severityClasses.LOW}">
+        ${escapeHtml(a.severity)}
+      </span>
+    </td>
+    <td class="py-3 px-3 text-amber-200">${escapeHtml(a.attacker_ip)}</td>
+    <td class="py-3 px-3 text-slate-300">${escapeHtml(a.target_user)}</td>
+    <td class="py-3 px-3">
+      <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.status] || severityClasses.active}">
+        ${escapeHtml(a.status || 'active')}
+      </span>
+    </td>
+    <td class="py-3 px-3 text-slate-400">${escapeHtml(a.description)}</td>
+  </tr>
+`).join('');
       } catch (err) {
         console.error('Dashboard poll failed:', err);
       }

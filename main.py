@@ -2,7 +2,7 @@ import argparse
 import os
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
-from parser import parse_auth_line
+from parser import parse_line
 from engine import BruteForceDetector
 from detection_rules import (
     SuccessfulAfterFailuresDetector,
@@ -13,6 +13,8 @@ from enrichment import IPEnricher
 from ingestionGen import tail_file
 from database import init_db, insert_event, insert_alert
 from ml_engine import AnomalyScorer, severity_from_score
+from threat_intel import IOCMatcher
+from correlator import CorrelationEngine
 
 DEFAULT_LOG_PATH = "/var/log/auth.log"
 ML_ALERT_COOLDOWN = timedelta(minutes=5)
@@ -96,6 +98,8 @@ if __name__ == "__main__":
     ml_scorer = AnomalyScorer()
     tracker = RealtimeBehaviorTracker()
     last_ml_alert = {}
+    ioc_matcher = IOCMatcher()
+    correlator = CorrelationEngine()
 
     print(f"[*] SIEM Agent live. Watching {LOG_PATH} with Rule + ML Detection...")
     if not ml_scorer.is_ready:
@@ -103,11 +107,21 @@ if __name__ == "__main__":
 
     # Monitors logs; triggers rule-based and ML-driven security alerts
     for raw_line in tail_file(LOG_PATH):
-        event = parse_auth_line(raw_line)
+        event = parse_line(raw_line)
         if not event:
             continue
 
         insert_event(event)
+        matches = ioc_matcher.match(event)
+        if matches:
+            ioc_alert = {
+                "timestamp": event["timestamp"], "rule_name": "IOC_MATCH",
+                "severity": "HIGH", "attacker_ip": event["source_ip"],
+                "target_user": event["user"],
+                "description": f"Local IOC match: {', '.join(matches)}",
+                "source": event.get("source", "sshd"), "mitre": "T1588.006",
+            }
+            insert_alert(ioc_alert)
 
 
         rule_alerts = [rule_detector.process_event(event),
@@ -119,8 +133,12 @@ if __name__ == "__main__":
         rule_alerts.append(impossible_travel.process_event(event, location))
         for rule_alert in rule_alerts:
             if rule_alert:
+                rule_alert["source"] = event.get("source", "sshd")
+                rule_alert["event_status"] = event.get("status")
                 rule_alert["description"] += f" [{ip_enricher.describe(location)}]"
                 insert_alert(rule_alert)
+                for correlated in correlator.feed(rule_alert):
+                    insert_alert(correlated)
                 print(f"[RULE ALERT] {rule_alert['rule_name']} from {rule_alert['attacker_ip']}")
 
 

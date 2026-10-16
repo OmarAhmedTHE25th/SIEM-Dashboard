@@ -1,0 +1,1 @@
+# IOC format: type:value (ip, domain, sha256, url)

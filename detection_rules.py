@@ -13,12 +13,15 @@ def _int(name, default):
 
 
 class SuccessfulAfterFailuresDetector:
-    def __init__(self, threshold=None, window_seconds=None):
+    def __init__(self, threshold=None, window_seconds=None, source=("sshd", None)):
         self.threshold = threshold or _int("SIEM_SUCCESS_AFTER_FAILURES", 5)
         self.window = timedelta(seconds=window_seconds or _int("SIEM_FAILURE_CORRELATION_WINDOW", 300))
         self.failures = defaultdict(deque)
+        self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
 
     def process_event(self, event):
+        if event.get("source", "sshd") not in self.sources:
+            return None
         key = (event["source_ip"], event["user"])
         history = self.failures[key]
         now = event["timestamp"]
@@ -40,11 +43,14 @@ class SuccessfulAfterFailuresDetector:
 
 
 class OffHoursLoginDetector:
-    def __init__(self, start=None, end=None):
+    def __init__(self, start=None, end=None, source=("sshd", None)):
         self.start = _int("SIEM_OFF_HOURS_START", 22) if start is None else start
         self.end = _int("SIEM_OFF_HOURS_END", 6) if end is None else end
+        self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
 
     def process_event(self, event):
+        if event.get("source", "sshd") not in self.sources:
+            return None
         if event.get("status") != "success":
             return None
         hour = event["timestamp"].hour

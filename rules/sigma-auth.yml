@@ -1,0 +1,8 @@
+title: Failed SSH authentication
+id: local-sigma-failed-ssh
+level: high
+detection:
+  selection:
+    status: failed
+    event_type: USER_AUTH
+  condition: selection

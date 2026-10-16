@@ -31,6 +31,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 
 - **Real-time log tailing**: follows `auth.log` like `tail -f`, handles file truncation/rotation, partial lines, and even UTF-16 null bytes (PowerShell-generated logs).
 - **Log parsing & normalization**: turns raw `sshd` lines into structured events (timestamp, hostname, source IP, user, status). Supports both modern ISO-8601 timestamps and legacy syslog format, and handles `invalid user` lines. A narrow set of `sudo` session lines and Suricata alert lines is parsed too (see [Known Limitations](#-known-limitations)).
+- **Source plugins**: `sources.base.Source` implementations for `sshd`, `sudo`, `suricata`, and `auditd`; `parser.parse_line()` uses first-match dispatch while `parse_auth_line()` remains compatible.
 - **Four rule-based detectors**: SSH brute force, successful login after many failures, off-hours logins, and impossible travel.
 - **ML-based detection**: an unsupervised **Isolation Forest** scores each IP's behavioral profile and flags statistical outliers, catching things simple thresholds miss (slow-and-low attacks, password spraying across many usernames).
 - **Score-based ML severity**: ML alerts are graded `CRITICAL` / `HIGH` / `MEDIUM` instead of a flat label.
@@ -38,6 +39,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - **Optional IP enrichment**: cached GeoIP and AbuseIPDB reputation lookups are appended to alert descriptions. Private/reserved addresses are skipped, and provider failures never crash ingestion. Tests inject deterministic London/Tokyo GeoIP data so the impossible-travel scenario can run offline.
 - **Persistent storage**: SQLite with indexes tuned for dashboard queries and ML feature extraction.
 - **REST API**: FastAPI endpoints for stats, alerts (filterable by status), grouped incidents, and acknowledge/suppress actions.
+- **Investigation workflow**: case management, historical search, raw event pivots, CSV/JSON export, SLA metadata, local IOC matching, and Prometheus metrics.
 - **Alert workflow**: every alert has a status (`active`, `acknowledged`, `suppressed`); suppressed alerts drop out of incident summaries.
 - **Incident grouping**: repeated alerts are rolled up per attacker IP + rule with counts and first/last-seen times.
 - **Optional token auth**: set `SIEM_API_TOKEN` and the dashboard and every API route require it.
@@ -75,6 +77,22 @@ flowchart LR
 ---
 
 ## 🧠 How Detection Works
+
+### Correlation
+
+Parsed events carry a `source` (`sshd`, `sudo`, `suricata`, or `auditd`) and
+are dispatched through the source plugin registry.  The correlation engine
+keeps a bounded in-memory alert window and emits `CORR_COMPROMISE_SUSPECTED`,
+`CORR_MULTI_STAGE_ATTACK`, and `CORR_ACCOUNT_TAKEOVER` alerts.  Their windows
+are configurable with `SIEM_CORR_COMPROMISE_WINDOW` (600 seconds),
+`SIEM_CORR_MULTI_STAGE_WINDOW` (900 seconds), and
+`SIEM_CORR_ACCOUNT_TAKEOVER_WINDOW` (3600 seconds).
+
+Native rule metadata is stored in YAML under `rules/` and includes `name`,
+`source`, `severity`, `mitre`, `group_by`, `window_seconds`, `threshold`,
+`enabled`, and `description`.  Sigma loading supports selection equality,
+lists, and the `contains`/`startswith`/`endswith` modifiers; aggregation,
+`1 of`, `all of`, and correlation syntax are intentionally rejected.
 
 ### 1. Rule-Based Detectors
 
@@ -147,6 +165,19 @@ Instead of hard-coded thresholds, the model learns what "normal" per-IP behavior
 | otherwise | `LOW` (not an anomaly) |
 
 ---
+
+### 3. Pluggable sources and YAML rules
+
+The `sources` package provides a small source interface and registry. The
+built-in `auditd` source parses Linux `USER_AUTH`/`USER_LOGIN` records, while
+the legacy `parse_auth_line` entry point remains compatible with existing
+callers. Events and alerts now record their source and optional MITRE
+technique; `init_db()` applies these columns as idempotent migrations.
+
+`rules_loader.load_rules(path)` loads native detector definitions and Sigma
+rules from YAML (PyYAML). If no path is supplied it loads the examples in
+`rules/`. Loaded rules are dispatched by `CorrelationEngine`, which can also
+be used directly with custom streaming detectors.
 
 ## 🌍 IP Enrichment
 
@@ -445,6 +476,26 @@ Marks an alert `acknowledged`. Returns `{"status": "acknowledged", "alert_id": 4
 ### `POST /api/alerts/{alert_id}/suppress`
 Marks an alert `suppressed` (hidden from incident summaries). Returns `{"status": "suppressed", "alert_id": 42}`, or `404` if the alert doesn't exist.
 
+### Search, events, cases, and metrics
+
+`GET /api/search?q=admin&source=sshd&kind=both&limit=100` returns
+`{"events": [...], "alerts": [...], "total": {"events": 1, "alerts": 1}}`.
+All filters (`user`, `ip`, `rule`, `severity`, `status`, `since`, `until`,
+`offset`) are parameterized and the limit is capped. `GET /api/events/{id}`
+and `GET /api/alerts/{id}` return one raw record; the alert response also
+includes nearby events. `GET /api/metrics` returns aggregate and process
+counters, while `/metrics` exposes a Prometheus-compatible text snapshot.
+
+Case workflow uses `POST /api/cases` with
+`{"title":"Investigation","alert_ids":[42]}`, `GET/PATCH /api/cases/{id}`,
+`POST /api/cases/{id}/alerts`, `DELETE /api/cases/{id}/alerts/{alert_id}`,
+and `POST /api/cases/{id}/notes`. Case statuses are `new`, `investigating`,
+`contained`, and `closed`.
+
+`GET /api/alerts/export?format=csv` downloads CSV; `format=json` returns a
+JSON array. IOC files use one `type:value` entry per line, for example
+`ip:203.0.113.10`; matches produce an `IOC_MATCH` alert in the live agent.
+
 Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ---
@@ -496,6 +547,12 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 | `SIEM_ENRICHMENT_TIMEOUT` | Per-request provider timeout (seconds) | `2.0` |
 | `ABUSEIPDB_API_KEY` | Enables AbuseIPDB reputation checks | unset (disabled) |
 | `SIEM_API_TOKEN` | Enables token auth for the dashboard and API (read by the API process) | unset (open access) |
+| `SIEM_CORR_COMPROMISE_WINDOW` | SSH brute-force followed by success window (seconds) | `600` |
+| `SIEM_CORR_MULTI_STAGE_WINDOW` | Rule plus Suricata correlation window (seconds) | `900` |
+| `SIEM_CORR_ACCOUNT_TAKEOVER_WINDOW` | Off-hours plus impossible-travel window (seconds) | `3600` |
+| `VT_API_KEY` | Enables VirusTotal enrichment | unset |
+| `OTX_API_KEY` | Enables AlienVault OTX enrichment | unset |
+| `SIEM_SIGMA_DIR` | Additional Sigma rule directory | unset |
 
 ### In-code settings
 
@@ -515,6 +572,14 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ## ⚠️ Known Limitations
 
+The Sigma implementation is intentionally a small, explicit subset and does
+not implement aggregation, `|count`, `1 of`/`all of`, or Sigma correlation
+rules. Metrics are process-local and reset on restart. Threat-intelligence
+lookups are best-effort and require provider keys for authenticated data.
+The dashboard's live case/search panels use the same token-protected API but
+the correlation warm-up is in-memory; historical alerts are available to the
+API and can be replayed by an operator.
+
 - **Narrow log coverage**: the parser matches `Failed password` / `Accepted password` from `sshd`, a minimal `sudo` session pattern, and Suricata lines containing `ET `. Key-based SSH auth and other services are ignored, so the success-based rules only see password logins.
 - **Non-SSH events reuse the SSH event model**: `sudo` session lines become `success` events with source IP `local` (so they can trigger `OFF_HOURS_LOGIN` and feed the ML tracker as one pseudo-IP), and Suricata lines become `failed` events keyed on the first `IP:port` found, so they count toward failed-login stats and the brute-force rule.
 - **Legacy syslog year**: the legacy timestamp fallback hardcodes the year `2026` since classic syslog omits it.
@@ -530,6 +595,10 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 ---
 
 ## 🗺️ Roadmap
+
+- Persist correlation state and add background provider refresh jobs.
+- Expand fixture coverage for every native, Sigma, correlation, and IOC rule.
+- Add streaming/WebSocket dashboard updates and multi-node metrics aggregation.
 
 ### Completed
 
@@ -572,3 +641,12 @@ This project is for **educational and defensive-security purposes only**. Only m
 
 **Omar Ahmed**: Computer Engineering student, cybersecurity enthusiast.
 GitHub: [@OmarAhmedTHE25th](https://github.com/OmarAhmedTHE25th)
+## Case management, IOC and search API
+
+`init_db()` adds `cases`, `case_alerts`, `iocs`, `ioc_matches`, and `enrichments` without dropping existing data. The API now provides `POST/GET/PATCH /api/cases`, `POST/GET /api/iocs`, `POST /api/enrichment` (VirusTotal/OTX are best-effort and require `VT_API_KEY`/`OTX_API_KEY`), `/api/events`, `/api/search`, `/api/metrics`, and `/api/metrics/timeseries`. `/api/alerts/export` returns CSV. All SQL values use sqlite3 placeholders; API tokens continue to work on every route.
+
+Detection regression fixtures live in `fixtures/` and can be run with `python scripts/run_detection_fixtures.py fixtures/brute_force.json`. Alert inserts use a five-minute active deduplication key and retain acknowledgement/SLA fields.
+
+## Known limitations and roadmap
+
+Threat-intelligence providers are optional and network failures intentionally return an empty provider result. IOC matching is deterministic and currently intended for IPs, domains, hashes, URLs, and email values; scheduled bulk enrichment, role-based case permissions, and a full event timeline remain future work. The dashboard remains a lightweight polling UI and should be placed behind TLS/authentication in production.

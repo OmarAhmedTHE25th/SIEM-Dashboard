@@ -1,0 +1,10 @@
+rules:
+  - type: brute_force
+    threshold: 3
+    window_seconds: 60
+  - type: successful_after_failures
+    threshold: 5
+    window_seconds: 300
+  - type: off_hours_login
+    start: 22
+    end: 6

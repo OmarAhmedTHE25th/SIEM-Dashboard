@@ -8,6 +8,26 @@ def _ensure_alert_columns(conn):
     columns = [row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()]
     if "status" not in columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if "source" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'")
+    if "mitre_technique" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN mitre_technique TEXT")
+    if "mitre" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN mitre TEXT")
+    if "dedup_key" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN dedup_key TEXT")
+    if "acknowledged_at" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN acknowledged_at TEXT")
+    if "sla_due_at" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN sla_due_at TEXT")
+
+
+def _ensure_event_columns(conn):
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()]
+    if "source" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'sshd'")
+    if "mitre_technique" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN mitre_technique TEXT")
 
 
 def init_db():
@@ -93,6 +113,47 @@ def init_db():
                        """)
 
         _ensure_alert_columns(conn)
+        _ensure_event_columns(conn)
+        # Case management, indicator enrichment and audit-friendly matching.
+        cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS cases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new',
+            severity TEXT NOT NULL DEFAULT 'MEDIUM', assignee TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, closed_at TEXT,
+            notes TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS case_alerts (
+            case_id INTEGER NOT NULL, alert_id INTEGER NOT NULL,
+            PRIMARY KEY (case_id, alert_id),
+            FOREIGN KEY(case_id) REFERENCES cases(id), FOREIGN KEY(alert_id) REFERENCES alerts(id)
+        );
+        CREATE TABLE IF NOT EXISTS iocs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL,
+            type TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual',
+            confidence REAL, tags TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(type, value)
+        );
+        CREATE TABLE IF NOT EXISTS ioc_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ioc_id INTEGER NOT NULL,
+            event_id INTEGER, alert_id INTEGER, matched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(ioc_id, event_id, alert_id),
+            FOREIGN KEY(ioc_id) REFERENCES iocs(id)
+        );
+        CREATE TABLE IF NOT EXISTS enrichments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, indicator TEXT NOT NULL, provider TEXT NOT NULL,
+            payload TEXT NOT NULL, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(indicator, provider)
+        );
+        CREATE INDEX IF NOT EXISTS idx_iocs_value ON iocs(value);
+        CREATE INDEX IF NOT EXISTS idx_case_alerts_alert ON case_alerts(alert_id);
+        """)
+        case_columns = {row[1] for row in cursor.execute("PRAGMA table_info(cases)")}
+        if "severity" not in case_columns:
+            cursor.execute("ALTER TABLE cases ADD COLUMN severity TEXT NOT NULL DEFAULT 'MEDIUM'")
+        if "notes" not in case_columns:
+            cursor.execute("ALTER TABLE cases ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
 
         # Indexes for fast querying during dashboard searches and ML extraction
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_ip ON events(source_ip);")
@@ -108,15 +169,18 @@ def insert_event(event: dict):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-                       INSERT INTO events (timestamp, hostname, source_ip, user, status, raw)
-                       VALUES (?, ?, ?, ?, ?, ?)
+                       INSERT INTO events
+                       (timestamp, hostname, source_ip, user, status, raw, source, mitre_technique)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        """, (
                            event["timestamp"].isoformat(),
                            event["hostname"],
                            event["source_ip"],
                            event["user"],
                            event["status"],
-                           event["raw"]
+                           event["raw"],
+                           event.get("source", "sshd"),
+                           event.get("mitre_technique")
                        ))
         conn.commit()
 
@@ -126,9 +190,19 @@ def insert_alert(alert: dict):
     status = alert.get("status", "active")
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+        dedup_key = alert.get("dedup_key") or "|".join(str(alert.get(k, "")) for k in
+                                                        ("rule_name", "attacker_ip", "target_user"))
+        # Do not flood the console with the same active finding.
+        duplicate = cursor.execute(
+            "SELECT id FROM alerts WHERE dedup_key = ? AND status = 'active' "
+            "AND timestamp >= datetime(?, '-5 minutes') LIMIT 1",
+            (dedup_key, alert["timestamp"].isoformat())).fetchone()
+        if duplicate:
+            return duplicate[0]
         cursor.execute("""
-                       INSERT INTO alerts (timestamp, rule_name, severity, attacker_ip, target_user, description, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       INSERT INTO alerts
+                       (timestamp, rule_name, severity, attacker_ip, target_user, description, status, source, mitre_technique, mitre, dedup_key, sla_due_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        """, (
                            alert["timestamp"].isoformat(),
                            alert["rule_name"],
@@ -136,6 +210,12 @@ def insert_alert(alert: dict):
                            alert["attacker_ip"],
                            alert["target_user"],
                            alert["description"],
-                           status
+                           status,
+                           alert.get("source", "rule"),
+                           alert.get("mitre_technique") or alert.get("mitre"),
+                           alert.get("mitre_technique") or alert.get("mitre"),
+                           dedup_key,
+                           alert.get("sla_due_at")
                        ))
         conn.commit()
+        return cursor.lastrowid

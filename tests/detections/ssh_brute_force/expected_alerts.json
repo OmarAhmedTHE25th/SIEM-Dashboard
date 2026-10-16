@@ -1,0 +1,1 @@
+[{"rule_name":"SSH_BRUTE_FORCE","severity":"HIGH","attacker_ip":"192.0.2.10","target_user":"admin"}]

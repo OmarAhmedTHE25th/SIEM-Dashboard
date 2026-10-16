@@ -96,3 +96,33 @@ class IPEnricher:
                 f"AbuseIPDB confidence: {enrichment['abuse_confidence_score']}%"
             )
         return "; ".join(details)
+
+
+class ThreatIntelEnricher:
+    """Best-effort VirusTotal and OTX lookups, disabled unless keys are set."""
+    def __init__(self, timeout: float = 2.0, vt_key: str | None = None,
+                 otx_key: str | None = None, fetcher: Callable | None = None):
+        self.timeout = timeout
+        self.vt_key = vt_key or os.getenv("VT_API_KEY")
+        self.otx_key = otx_key or os.getenv("OTX_API_KEY")
+        self.fetcher = fetcher or self._fetch
+
+    def _fetch(self, url: str, headers: dict[str, str]) -> dict[str, Any] | None:
+        request = Request(url, headers=headers)
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    def lookup(self, indicator: str, indicator_type: str = "ip") -> dict[str, Any]:
+        result = {"indicator": indicator, "type": indicator_type, "providers": {}}
+        if self.vt_key:
+            result["providers"]["virustotal"] = self.fetcher(
+                f"https://www.virustotal.com/api/v3/{indicator_type}s/{indicator}",
+                {"x-apikey": self.vt_key})
+        if self.otx_key:
+            result["providers"]["otx"] = self.fetcher(
+                f"https://otx.alienvault.com/api/v1/indicators/{indicator_type}/{indicator}/general",
+                {"X-OTX-API-KEY": self.otx_key})
+        return result

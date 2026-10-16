@@ -2,13 +2,16 @@ from collections import defaultdict, deque
 from datetime import timedelta
 
 class BruteForceDetector:
-    def __init__(self, threshold: int = 3, window_seconds: int = 60):
+    def __init__(self, threshold: int = 3, window_seconds: int = 60, source=("sshd", None)):
         self.threshold = threshold
         self.window = timedelta(seconds=window_seconds)
+        self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
         # Key: source_ip (str) -> Value: deque of datetime timestamps
         self.ip_windows = defaultdict(deque)
 
     def process_event(self, event: dict) -> dict | None:
+        if event.get("source", "sshd") not in self.sources:
+            return None
         # Ignore events that aren't failed logins
         if event.get("status") != "failed":
             return None
