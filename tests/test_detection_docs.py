@@ -38,6 +38,29 @@ class DetectionDocumentationTests(unittest.TestCase):
             for heading in required:
                 self.assertIn(f"#### {heading}", section, f"{rule} lacks {heading}")
 
+    def test_correlation_false_positive_sections_have_multiple_scenarios(self):
+        detections = (ROOT / "docs" / "DETECTIONS.md").read_text(encoding="utf-8")
+        for rule in (
+            "CORR_COMPROMISE_SUSPECTED",
+            "CORR_MULTI_STAGE_ATTACK",
+            "CORR_ACCOUNT_TAKEOVER",
+        ):
+            section = re.search(
+                rf"^###\s+{re.escape(rule)}\s*$([\s\S]*?)(?=^###\s+|\Z)",
+                detections,
+                re.MULTILINE,
+            ).group(1)
+            false_positives = re.search(
+                r"^#### False positives\s*$([\s\S]*?)(?=^####\s+|\Z)",
+                section,
+                re.MULTILINE,
+            ).group(1)
+            self.assertGreaterEqual(
+                len(re.findall(r"^- ", false_positives, re.MULTILINE)),
+                3,
+                rule,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

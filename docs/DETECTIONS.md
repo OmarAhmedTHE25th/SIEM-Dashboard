@@ -49,7 +49,7 @@ The same IP successfully authenticating as the same user after repeated recent
 failures suggests that a guessing attempt succeeded.
 
 #### ATT&CK
-**T1078 — Valid Accounts** (Initial Access, Defense Evasion, Persistence,
+**T1078.003 — Valid Accounts: Local Accounts** (Initial Access, Defense Evasion, Persistence,
 Privilege Escalation).
 
 #### Data
@@ -84,7 +84,7 @@ A successful login outside the organization's normal operating hours may
 indicate use of stolen credentials or unauthorized access.
 
 #### ATT&CK
-**T1078 — Valid Accounts** (Initial Access, Defense Evasion, Persistence,
+**T1078.003 — Valid Accounts: Local Accounts** (Initial Access, Defense Evasion, Persistence,
 Privilege Escalation).
 
 #### Data
@@ -119,7 +119,7 @@ Two successful logins for one user from locations requiring travel faster than
 800 km/h within 24 hours are inconsistent with a single human session.
 
 #### ATT&CK
-**T1078 — Valid Accounts** (Initial Access, Defense Evasion, Persistence,
+**T1078,T1133 — Valid Accounts, External Remote Services** (Initial Access, Defense Evasion, Persistence,
 Privilege Escalation).
 
 #### Data
@@ -159,7 +159,8 @@ An SSH brute-force alert and a successful-authentication signal from the same
 attacker IP in a short period indicate that credentials may have been obtained.
 
 #### ATT&CK
-**T1078 — Valid Accounts** (Initial Access, Defense Evasion, Persistence,
+**T1110.001,T1078 — Brute Force: Password Guessing -> Valid Accounts**
+(Credential Access, Initial Access, Defense Evasion, Persistence,
 Privilege Escalation).
 
 #### Data
@@ -172,8 +173,18 @@ Within `SIEM_CORR_COMPROMISE_WINDOW` (600 seconds by default), pair
 correlation alert.
 
 #### False positives
-Shared NAT addresses, test activity, unrelated alerts from a busy scanner, or
-a successful login by an administrator after a mistaken password burst.
+- **Shared NAT egress:** A VPN concentrator can carry an attacker's brute-force
+  traffic and an unrelated employee's successful login on the same public IP,
+  while the correlation keys only on IP rather than session or channel.
+- **Legitimate recovery after user error:** An employee can mistype a password
+  five times and then authenticate successfully; an unrelated brute-force burst
+  from that shared egress IP makes the two genuine alerts look causally linked.
+- **Service-account overlap:** A scheduled job can successfully authenticate
+  from an IP after a different user was targeted there, because the detector
+  does not require the source alert and success alert to share a user.
+- **Alert timing distortion:** The correlation uses alert timestamps, so queued,
+  delayed, or replayed alerts can enter the window even when their source events
+  were not close in time.
 
 #### Tuning
 Tune `SIEM_CORR_COMPROMISE_WINDOW` and ensure upstream detectors provide
@@ -195,8 +206,8 @@ An endpoint/network alert and a host rule alert from the same IP in a short
 period are evidence of a multi-stage intrusion.
 
 #### ATT&CK
-**T1078 — Valid Accounts** (Initial Access, Defense Evasion, Persistence,
-Privilege Escalation).
+**T1190,T1071 — Exploit Public-Facing Application -> Application Layer Protocol**
+(Initial Access, Command and Control).
 
 #### Data
 Alerts with `timestamp`, `attacker_ip`, `source`, and `rule_name`; a Suricata
@@ -207,8 +218,17 @@ Within 900 seconds (`SIEM_CORR_MULTI_STAGE_WINDOW`), correlate two alerts from
 the same IP when exactly one is a Suricata alert.
 
 #### False positives
-Internet scanners, shared NATs, vulnerability assessments, and a host event
-that is unrelated to a network alert can satisfy the simple pairing.
+- **Shared cloud egress:** A Suricata signature from a cloud region can share
+  an IP with a legitimate host event from another tenant or user, creating a
+  pairing with no causal relationship.
+- **Authorized vulnerability scanning:** A scanner can legitimately trigger a
+  network signature and then cause a host-side authentication or audit alert;
+  the expected test sequence is indistinguishable from an intrusion here.
+- **Clock skew between sources:** Drift between Suricata and host clocks can
+  move events that were hours apart into the 900-second correlation window.
+- **Alert-source misclassification:** A host sensor incorrectly labeled as
+  non-Suricata, or a network event carrying the wrong source field, can satisfy
+  the one-network/one-host test without representing two attack stages.
 
 #### Tuning
 Adjust the correlation window and require stronger source/rule combinations
@@ -229,7 +249,7 @@ Off-hours access and impossible travel for the same user and IP within an hour
 are stronger evidence of account takeover than either signal alone.
 
 #### ATT&CK
-**T1078 — Valid Accounts** (Initial Access, Defense Evasion, Persistence,
+**T1078,T1133 — Valid Accounts, External Remote Services** (Initial Access, Defense Evasion, Persistence,
 Privilege Escalation).
 
 #### Data
@@ -241,8 +261,18 @@ Within `SIEM_CORR_ACCOUNT_TAKEOVER_WINDOW` (3600 seconds), require both rule
 names, the same IP, and the same target user, then emit a high-severity alert.
 
 #### False positives
-VPN/proxy address reuse, shared accounts, travel, clock or GeoIP errors, and
-legitimate emergency access can produce both inputs.
+- **Rotating VPN egress:** A legitimate user moving between VPN exits can
+  produce an off-hours login and an impossible-travel alert for the same
+  account/IP pairing because the correlation lacks device and VPN context.
+- **Shift work and travel:** An on-call engineer can log in late from a hotel
+  and then connect from another location; both inputs are valid, but their
+  combination does not establish takeover.
+- **Shared or delegated accounts:** Multiple authorized operators can use one
+  account from different locations, causing impossible travel and off-hours
+  signals that belong to different people.
+- **Clock and GeoIP errors:** NTP skew or stale geolocation can independently
+  create both input alerts from one legitimate access pattern, making the
+  correlation amplify an enrichment error.
 
 #### Tuning
 Tune the one-hour window and maintain trusted VPN ranges, user schedules, and

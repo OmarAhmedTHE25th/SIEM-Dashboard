@@ -10,10 +10,10 @@ rules:
     threshold: 5
     window_seconds: 300
   - type: off_hours_login
-    mitre: T1078
-    technique_name: Valid Accounts
+    mitre: T1078.003
+    technique_name: "Valid Accounts: Local Accounts"
     start: 22
     end: 6
   - type: impossible_travel
-    mitre: T1078
-    technique_name: Valid Accounts
+    mitre: T1078,T1133
+    technique_name: "Valid Accounts, External Remote Services"

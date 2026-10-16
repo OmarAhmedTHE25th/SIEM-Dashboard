@@ -106,6 +106,7 @@ def get_coverage():
         tactic_alert_counts = {tactic: 0 for tactic in TACTICS}
         for rule_name in ATTACK:
             item = attack_metadata(rule_name)
+            item["techniques"] = item.get("techniques", [])
             count = alert_counts.get(rule_name, 0)
             item["alert_count"] = count
             item["covered"] = count > 0

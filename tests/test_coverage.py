@@ -32,7 +32,7 @@ class CoverageApiTests(unittest.TestCase):
         self.assertEqual(result["tactic_counts"]["Execution"], 0)
         self.assertEqual(
             next(t for t in result["tactics"] if t["tactic"] == "Credential Access")["count"],
-            1,
+            2,
         )
 
 

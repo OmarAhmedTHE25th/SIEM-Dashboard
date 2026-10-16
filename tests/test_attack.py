@@ -1,6 +1,6 @@
 import unittest
 
-from attack import lookup
+from attack import ATTACK, metadata, lookup
 from engine import BruteForceDetector
 from datetime import datetime
 
@@ -22,6 +22,20 @@ class AttackMetadataTests(unittest.TestCase):
         })
         self.assertEqual(alert["mitre_technique"], "T1110.001")
         self.assertEqual(alert["technique_name"], "Brute Force: Password Guessing")
+
+    def test_multi_technique_metadata(self):
+        self.assertEqual(lookup("IMPOSSIBLE_TRAVEL")["mitre_technique"], "T1078,T1133")
+        item = metadata("CORR_COMPROMISE_SUSPECTED")
+        self.assertEqual(
+            item["techniques"],
+            ["T1110.001", "T1078"],
+        )
+        self.assertIn("Credential Access", item["tactics"])
+        self.assertIn("Initial Access", item["tactics"])
+
+    def test_every_rule_has_tactics(self):
+        for rule_name in ATTACK:
+            self.assertTrue(metadata(rule_name)["tactics"], rule_name)
 
 
 if __name__ == "__main__":

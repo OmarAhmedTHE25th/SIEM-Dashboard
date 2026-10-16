@@ -51,7 +51,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - **Live dashboard**: a Tailwind-styled single-page console with color-coded severity and status badges, fixed-height responsive severity-distribution and top-attacker-IPs charts, and an alert table, refreshing every 2 seconds. Chart containers remain bounded as new data arrives so visualizations do not expand to fill the screen.
 - **Docker support**: one image, two services (agent + API) wired together with `docker compose`.
 - **Configurable**: log path via CLI flag or env var, and every rule threshold tunable through environment variables.
-- **Unit tests**: the full `unittest` suite covers parser/source behavior, YAML pipeline loading, correlation, populated detection fixtures, Sigma rejection, and deduplication. See [`docs/COVERAGE.md`](docs/COVERAGE.md), [`docs/DETECTIONS.md`](docs/DETECTIONS.md), and [`docs/ATTACK_COVERAGE.md`](docs/ATTACK_COVERAGE.md).
+- **Unit tests**: the full `unittest` suite covers parser/source behavior, YAML pipeline loading, correlation, populated detection fixtures, Sigma rejection, and deduplication. See [`docs/COVERAGE.md`](docs/COVERAGE.md), [`docs/DETECTIONS.md`](docs/DETECTIONS.md), and the tactic-level and rule-level [`docs/ATTACK_COVERAGE.md`](docs/ATTACK_COVERAGE.md).
 - **Adversary emulation**: safe, deterministic fixture scenarios and Atomic Red Team references are documented in [`docs/ADVERSARY_EMULATION.md`](docs/ADVERSARY_EMULATION.md).
 - **Sigma support**: supported syntax, rejected features, authoring guidance, and known gaps are documented in [`docs/SIGMA.md`](docs/SIGMA.md).
 - **Offline training/ingestion**: bulk-load a historical log file (e.g. the Loghub `OpenSSH_2k.log` dataset) to bootstrap the ML model.
@@ -99,8 +99,11 @@ Native rule metadata is stored in YAML under `rules/` and includes `name`,
 `source`, `severity`, `mitre`, `group_by`, `window_seconds`, `threshold`,
 `enabled`, and `description`.  Sigma loading supports selection equality,
 Alerts expose the associated MITRE ATT&CK technique ID (`mitre_technique`) and
-human-readable `technique_name`; the mapping is centralized in `attack.py` and
-is applied consistently to native, Sigma, correlation, and IOC detections.  Sigma loading supports selection equality,
+human-readable `technique_name`; correlation chains retain comma-separated
+technique IDs and are summarized in the tactic-level and rule-level
+[`ATT&CK coverage`](docs/ATTACK_COVERAGE.md) view. The mapping is centralized
+in `attack.py` and is applied consistently to native, Sigma, correlation, and
+IOC detections. Sigma loading supports selection equality,
 lists, and the `contains`/`startswith`/`endswith` modifiers; aggregation,
 `1 of`, `all of`, and correlation syntax are intentionally rejected.
 
