@@ -1,5 +1,5 @@
 # 🛡️ SIEM Dashboard
-
+[![CI](https://github.com/OmarAhmedTHE25th/SIEM-Dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/OmarAhmedTHE25th/SIEM-Dashboard/actions/workflows/ci.yml)
 A lightweight, real-time **Security Information and Event Management (SIEM)** system built from scratch in Python. It tails SSH authentication logs, normalizes them into structured events, and runs them through **two detection layers**: a set of **rule-based detectors** (brute force, successful-login-after-failures, off-hours logins, impossible travel) and an **Isolation Forest** ML model that scores each IP's behavior. Alerts are optionally enriched with GeoIP and reputation data, stored in SQLite, and served by a **FastAPI** backend (optionally token-protected) to a live dark-mode monitoring dashboard. The whole stack can be run with Docker Compose.
 
 > Built as a hands-on cybersecurity + machine learning portfolio project to explore how real SIEM pipelines ingest, parse, correlate, enrich, and alert on log data.
