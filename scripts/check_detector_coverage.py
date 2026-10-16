@@ -81,6 +81,7 @@ def expected_for(directory):
 
 def main():
     root = Path("tests/detections")
+    unverified = []
     print("Baseline: all detectors loaded")
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
         f.write(rules_yaml(BASE_RULES))
@@ -111,8 +112,13 @@ def main():
                 any_fail = True
                 print(f"  {name}: FAILS (missing {sorted(missing)})")
         if not any_fail:
+            unverified.append(rule_type)
             print(f"  !! NO FIXTURE FAILED — {rule_type} is unverified")
+    if unverified:
+        print(f"\nERROR: unverified detectors: {', '.join(unverified)}")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
