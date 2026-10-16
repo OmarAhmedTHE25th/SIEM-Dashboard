@@ -5,6 +5,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 
 from config import DB_PATH
+from attack import lookup
 
 
 def _window(name, default):
@@ -54,13 +55,17 @@ class CorrelationEngine:
     @staticmethod
     def _correlated(name, severity, current, previous):
         ids = [str(previous.get("id", "?")), str(current.get("id", "?"))]
-        return {
+        alert = {
             "timestamp": current["timestamp"], "rule_name": name, "severity": severity,
             "attacker_ip": current.get("attacker_ip", "unknown"),
             "target_user": current.get("target_user", "unknown"),
             "description": f"Correlated alerts {', '.join(ids)}",
             "source": "correlation",
         }
+        technique = lookup(name)
+        if technique:
+            alert.update(technique)
+        return alert
 
     def _prune(self, ip, now):
         cutoff = max(

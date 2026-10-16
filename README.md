@@ -4,6 +4,9 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 
 > Built as a hands-on cybersecurity + machine learning portfolio project to explore how real SIEM pipelines ingest, parse, correlate, enrich, and alert on log data.
 
+> **Security documentation:** see the [STRIDE threat model](docs/THREAT_MODEL.md)
+> for trust boundaries, assumptions, and explicit detection limits.
+
 ---
 
 ## 📑 Table of Contents
@@ -12,6 +15,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - [Architecture](#-architecture)
 - [How Detection Works](#-how-detection-works)
 - [IP Enrichment](#-ip-enrichment)
+- [Threat Intelligence](docs/THREAT_INTEL.md)
 - [Project Structure](#-project-structure)
 - [Tech Stack](#-tech-stack)
 - [Getting Started](#-getting-started)
@@ -21,6 +25,7 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - [API Reference](#-api-reference)
 - [Database Schema](#-database-schema)
 - [Configuration & Tuning](#-configuration--tuning)
+- [Threat Model](docs/THREAT_MODEL.md)
 - [Known Limitations](#-known-limitations)
 - [Roadmap](#-roadmap)
 - [Disclaimer](#-disclaimer)
@@ -46,7 +51,9 @@ A lightweight, real-time **Security Information and Event Management (SIEM)** sy
 - **Live dashboard**: a Tailwind-styled single-page console with color-coded severity and status badges, fixed-height responsive severity-distribution and top-attacker-IPs charts, and an alert table, refreshing every 2 seconds. Chart containers remain bounded as new data arrives so visualizations do not expand to fill the screen.
 - **Docker support**: one image, two services (agent + API) wired together with `docker compose`.
 - **Configurable**: log path via CLI flag or env var, and every rule threshold tunable through environment variables.
-- **Unit tests**: the full `unittest` suite covers parser/source behavior, YAML pipeline loading, correlation, populated detection fixtures, Sigma rejection, and deduplication. See `docs/COVERAGE.md`.
+- **Unit tests**: the full `unittest` suite covers parser/source behavior, YAML pipeline loading, correlation, populated detection fixtures, Sigma rejection, and deduplication. See [`docs/COVERAGE.md`](docs/COVERAGE.md), [`docs/DETECTIONS.md`](docs/DETECTIONS.md), and [`docs/ATTACK_COVERAGE.md`](docs/ATTACK_COVERAGE.md).
+- **Adversary emulation**: safe, deterministic fixture scenarios and Atomic Red Team references are documented in [`docs/ADVERSARY_EMULATION.md`](docs/ADVERSARY_EMULATION.md).
+- **Sigma support**: supported syntax, rejected features, authoring guidance, and known gaps are documented in [`docs/SIGMA.md`](docs/SIGMA.md).
 - **Offline training/ingestion**: bulk-load a historical log file (e.g. the Loghub `OpenSSH_2k.log` dataset) to bootstrap the ML model.
 
 ---
@@ -91,6 +98,9 @@ are configurable with `SIEM_CORR_COMPROMISE_WINDOW` (600 seconds),
 Native rule metadata is stored in YAML under `rules/` and includes `name`,
 `source`, `severity`, `mitre`, `group_by`, `window_seconds`, `threshold`,
 `enabled`, and `description`.  Sigma loading supports selection equality,
+Alerts expose the associated MITRE ATT&CK technique ID (`mitre_technique`) and
+human-readable `technique_name`; the mapping is centralized in `attack.py` and
+is applied consistently to native, Sigma, correlation, and IOC detections.  Sigma loading supports selection equality,
 lists, and the `contains`/`startswith`/`endswith` modifiers; aggregation,
 `1 of`, `all of`, and correlation syntax are intentionally rejected.
 
@@ -189,6 +199,9 @@ be used directly with custom streaming detectors.
 - **Safe by design**: private, loopback, link-local, and reserved addresses are never sent to a provider, and any lookup failure or timeout is swallowed so detection keeps running.
 - **Output**: alert descriptions get a suffix such as `[GeoIP: Berlin, Germany; AbuseIPDB confidence: 87%]`, or `[Private/reserved source IP]`.
 
+Threat-intelligence IOC confidence, expiry, weighting, and API operations are documented in
+[Threat Intelligence](docs/THREAT_INTEL.md).
+
 ---
 
 ## 📂 Project Structure
@@ -211,6 +224,8 @@ SIEM-Dashboard/
 ├── api.py               # FastAPI app: dashboard, JSON endpoints, optional token auth
 ├── dashboard.html       # Tailwind + Chart.js live monitoring console
 ├── docs/COVERAGE.md     # Detection fixture coverage matrix
+├── docs/DETECTIONS.md   # Detection hypotheses, logic, tuning, and gaps
+├── docs/ATTACK_COVERAGE.md # MITRE ATT&CK tactic and technique coverage
 ├── config.py            # Central paths (data dir, DB path, model path)
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile           # Image for both services (python:3.12-slim)
@@ -415,6 +430,15 @@ The test feeds every line through parsing, configured detectors, enrichment,
 IOC matching, ML (when available), and correlation.
 Expected rule names are compared without relying on alert order.
 Use `python -m unittest tests.test_detections -v` to run only these fixtures.
+To run the fixture suite and print the ATT&CK techniques covered by its
+expected alerts, use [`scripts/validate_detections.sh`](scripts/validate_detections.sh):
+
+```bash
+bash scripts/validate_detections.sh
+```
+
+Sigma's supported and unsupported syntax is documented in
+[`docs/SIGMA.md`](docs/SIGMA.md).
 
 ---
 
@@ -485,10 +509,21 @@ Groups alerts by **attacker IP + rule** (suppressed alerts excluded) and returns
 ```
 
 ### `POST /api/alerts/{alert_id}/ack`
-Marks an alert `acknowledged`. Returns `{"status": "acknowledged", "alert_id": 42}`, or `404` if the alert doesn't exist.
+Marks an alert `acknowledged`. An optional body such as
+`{"verdict":"false_positive","reason":"Known scanner"}` records the verdict
+and `verdict_at`. Verdicts are `true_positive`, `false_positive`, and
+`benign_true_positive`. Returns `{"status": "acknowledged", "alert_id": 42}`,
+or `404` if the alert doesn't exist.
 
 ### `POST /api/alerts/{alert_id}/suppress`
-Marks an alert `suppressed` (hidden from incident summaries). Returns `{"status": "suppressed", "alert_id": 42}`, or `404` if the alert doesn't exist.
+Marks an alert `suppressed` (hidden from incident summaries). The body must
+include a `reason_code`: `known_scanner`, `authorized_test`,
+`monitoring_account`, or `tuning_needed`. Returns `{"status": "suppressed", "alert_id": 42}`,
+or `404` if the alert doesn't exist.
+
+### `POST /api/alerts/{alert_id}/escalate`
+Records `escalated_at` and preserves the alert's current status. Returns the
+status and alert ID, or `404` if the alert doesn't exist.
 
 ### Search, events, cases, and metrics
 
@@ -540,6 +575,9 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 | `target_user` | TEXT | |
 | `description` | TEXT | human-readable explanation, with enrichment info appended |
 | `status` | TEXT | alert workflow state: `active` (default), `acknowledged`, or `suppressed`; indexed |
+| `verdict`, `verdict_reason`, `verdict_at` | TEXT | optional acknowledgement assessment and timestamp |
+| `suppressed_reason` | TEXT | suppression reason code |
+| `escalated_at`, `closed_at` | TEXT | triage timestamps |
 
 ---
 
@@ -586,8 +624,14 @@ Interactive docs are auto-generated by FastAPI at **`/docs`** (Swagger UI).
 
 ## ⚠️ Known Limitations
 
-The Sigma implementation is intentionally a small, explicit subset and does
-not implement aggregation, `|count`, `1 of`/`all of`, or Sigma correlation
+See the [STRIDE threat model](docs/THREAT_MODEL.md) for the security
+assumptions, trust boundaries, and explicit cannot-detect list behind these
+limitations.
+
+The Sigma implementation is intentionally a small, explicit subset. See
+[`docs/SIGMA.md`](docs/SIGMA.md) for supported syntax, rejected features,
+rules guidance, and known gaps. It does not implement aggregation, `|count`,
+`1 of`/`all of`, or Sigma correlation
 rules. Metrics are process-local and reset on restart. Threat-intelligence
 lookups are best-effort and require provider keys for authenticated data.
 The unauthenticated `/metrics` endpoint is intentionally available to
@@ -602,7 +646,7 @@ Prometheus scrapers even when `SIEM_API_TOKEN` is configured.
 - **Impossible travel is approximate**: GeoIP is city-level at best, and VPNs/proxies can trigger false positives.
 - **Training data quality**: `contamination=0.35` is tuned for a noisy historical sample, not for a clean production baseline.
 - **Simple shared-token auth**: one optional token, with no users, roles, or TLS. The `?token=` query-string option can end up in server logs and browser history, and the dashboard keeps the token in the browser's `localStorage`. Prefer the header, and put the app behind a reverse proxy with HTTPS before exposing it beyond localhost.
-- **Dashboard shows recent alerts only**: the table and both charts are built from the 20 most recent alerts, not the full history. Acknowledge/suppress and incident grouping are API-only for now (there are no buttons for them in the UI).
+- **Dashboard shows recent alerts only**: the table and both charts are built from the 20 most recent alerts, not the full history. Alert triage controls act on those recent rows; incident grouping remains available through the API.
 - **Docker log access is Linux-only by default**: the agent container reads the host's `/var/log` through a read-only mount.
 - **ML fixture coverage**: ML scoring is not included in deterministic fixtures because it depends on a trained model; `docs/COVERAGE.md` tracks this explicitly.
 - **Alert collapse**: identical active alerts collapse within five minutes, but `dedup_count` preserves how many occurrences were observed.

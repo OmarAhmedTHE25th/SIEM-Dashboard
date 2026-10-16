@@ -4,6 +4,7 @@ import json
 import csv
 import io
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -12,12 +13,17 @@ from config import DB_PATH
 from database import init_db
 from enrichment import ThreatIntelEnricher
 from ioc import match_iocs
+from threat_intel.matcher import confidence_weight
 from metrics import snapshot as metrics_snapshot, prometheus as metrics_prometheus
+from attack import ATTACK, TACTICS, metadata as attack_metadata
 
 app = FastAPI(title="SIEM Dashboard API")
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_NAME = DB_PATH
+ALERT_VERDICTS = {"true_positive", "false_positive", "benign_true_positive"}
+SUPPRESSION_REASON_CODES = {"known_scanner", "authorized_test", "monitoring_account", "tuning_needed"}
+IOC_DEFAULT_TTL = timedelta(days=90)
 
 
 def get_db():
@@ -83,6 +89,49 @@ def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/coverage", dependencies=[Depends(require_api_auth)])
+def get_coverage():
+    """Return static ATT&CK rule coverage and alert-backed tactic counts."""
+    try:
+        with get_db() as conn:
+            alert_rows = conn.execute(
+                "SELECT rule_name, COUNT(*) AS count FROM alerts GROUP BY rule_name"
+            )
+            if hasattr(alert_rows, "fetchall"):
+                alert_rows = alert_rows.fetchall()
+            alert_counts = {row["rule_name"]: row["count"] for row in alert_rows}
+
+        rules = []
+        tactic_counts = {tactic: 0 for tactic in TACTICS}
+        tactic_alert_counts = {tactic: 0 for tactic in TACTICS}
+        for rule_name in ATTACK:
+            item = attack_metadata(rule_name)
+            count = alert_counts.get(rule_name, 0)
+            item["alert_count"] = count
+            item["covered"] = count > 0
+            rules.append(item)
+            for tactic in item["tactics"]:
+                tactic_counts[tactic] += 1
+                tactic_alert_counts[tactic] += count
+
+        tactics = [
+            {"tactic": tactic, "count": tactic_counts[tactic],
+             "alert_count": tactic_alert_counts[tactic]}
+            for tactic in TACTICS
+        ]
+        return {
+            "tactics": tactics,
+            "tactic_counts": {item["tactic"]: item["count"] for item in tactics},
+            "rules": rules,
+            "rule_coverage": rules,
+            "total_rules": len(rules),
+            "covered_rules": sum(rule["covered"] for rule in rules),
+        }
+    except Exception as e:
+        print(f"[API ERROR /api/coverage]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/alerts", dependencies=[Depends(require_api_auth)])
 def get_alerts(limit: int = 50, status: str | None = None):
     try:
@@ -91,13 +140,13 @@ def get_alerts(limit: int = 50, status: str | None = None):
             limit = max(1, min(limit, 500))
             if status:
                 rows = cur.execute(
-                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, sla_due_at, dedup_key, dedup_count "
+                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, mitre_technique, technique_name, sla_due_at, dedup_key, dedup_count, verdict, verdict_reason, verdict_at, suppressed_reason, escalated_at, closed_at "
                     "FROM alerts WHERE status = ? ORDER BY id DESC LIMIT ?",
                     (status.lower(), limit),
                 ).fetchall()
             else:
                 rows = cur.execute(
-                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, sla_due_at, dedup_key, dedup_count "
+                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, mitre_technique, technique_name, sla_due_at, dedup_key, dedup_count, verdict, verdict_reason, verdict_at, suppressed_reason, escalated_at, closed_at "
                     "FROM alerts ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
@@ -111,7 +160,7 @@ def get_alerts(limit: int = 50, status: str | None = None):
 def export_alerts_csv(format: str = "csv"):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id,timestamp,rule_name,severity,attacker_ip,target_user,status,description "
+            "SELECT id,timestamp,rule_name,severity,attacker_ip,target_user,status,description,mitre,mitre_technique,technique_name,verdict,verdict_reason,verdict_at,suppressed_reason,escalated_at,closed_at "
             "FROM alerts ORDER BY id DESC").fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -148,18 +197,31 @@ def get_incidents(limit: int = 10):
 
 
 @app.post("/api/alerts/{alert_id}/ack", dependencies=[Depends(require_api_auth)])
-def ack_alert(alert_id: int):
+def ack_alert(alert_id: int, payload: dict | None = None):
     try:
+        payload = payload or {}
+        verdict = payload.get("verdict")
+        reason = payload.get("reason")
+        if verdict is not None:
+            verdict = str(verdict).strip().lower()
+            if verdict not in ALERT_VERDICTS:
+                raise HTTPException(400, "invalid verdict")
+        if reason is not None and not isinstance(reason, str):
+            raise HTTPException(400, "reason must be a string")
         with get_db() as conn:
             cursor = conn.cursor()
             updated = cursor.execute(
-                "UPDATE alerts SET status = 'acknowledged', acknowledged_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (alert_id,),
+                "UPDATE alerts SET status = 'acknowledged', acknowledged_at = CURRENT_TIMESTAMP, "
+                "verdict = COALESCE(?, verdict), verdict_reason = COALESCE(?, verdict_reason), "
+                "verdict_at = CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE verdict_at END "
+                "WHERE id = ?",
+                (verdict, reason, verdict, alert_id),
             )
             conn.commit()
             if updated.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Alert not found")
-            return {"status": "acknowledged", "alert_id": alert_id}
+            return {"status": "acknowledged", "alert_id": alert_id, "verdict": verdict,
+                    "verdict_reason": reason}
     except HTTPException:
         raise
     except Exception as e:
@@ -168,22 +230,43 @@ def ack_alert(alert_id: int):
 
 
 @app.post("/api/alerts/{alert_id}/suppress", dependencies=[Depends(require_api_auth)])
-def suppress_alert(alert_id: int):
+def suppress_alert(alert_id: int, payload: dict | None = None):
     try:
+        payload = payload or {}
+        reason_code = payload.get("reason_code") if isinstance(payload, dict) else None
+        if reason_code not in SUPPRESSION_REASON_CODES:
+            raise HTTPException(400, "invalid reason_code")
         with get_db() as conn:
             cursor = conn.cursor()
             updated = cursor.execute(
-                "UPDATE alerts SET status = 'suppressed' WHERE id = ?",
-                (alert_id,),
+                "UPDATE alerts SET status = 'suppressed', suppressed_reason = ? WHERE id = ?",
+                (reason_code, alert_id),
             )
             conn.commit()
             if updated.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Alert not found")
-            return {"status": "suppressed", "alert_id": alert_id}
+            return {"status": "suppressed", "alert_id": alert_id, "reason_code": reason_code}
     except HTTPException:
         raise
     except Exception as e:
         print(f"[API ERROR /api/alerts/{alert_id}/suppress]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/alerts/{alert_id}/escalate", dependencies=[Depends(require_api_auth)])
+def escalate_alert(alert_id: int):
+    try:
+        with get_db() as conn:
+            row = conn.execute("SELECT status FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Alert not found")
+            conn.execute("UPDATE alerts SET escalated_at = CURRENT_TIMESTAMP WHERE id = ?", (alert_id,))
+            conn.commit()
+            return {"status": row["status"], "alert_id": alert_id, "escalated": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API ERROR /api/alerts/{alert_id}/escalate]: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -382,27 +465,63 @@ def create_ioc(payload: dict):
     value, kind = str(payload.get("value", "")).strip(), str(payload.get("type", "")).lower()
     if not value or kind not in {"ip", "domain", "hash", "url", "email"}:
         raise HTTPException(400, "value and supported type are required")
+    confidence = payload.get("confidence", 0.5)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence)))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "confidence must be a number between 0 and 1")
+    expires_at = payload.get("expires_at")
+    if expires_at is None:
+        expires_at = (datetime.now(timezone.utc) + IOC_DEFAULT_TTL).isoformat()
+    ioc = {"type": kind, "confidence": confidence}
+    weight = confidence_weight(ioc)
     with get_db() as conn:
-        cur = conn.execute("INSERT OR IGNORE INTO iocs(value,type,source,confidence,tags) VALUES(?,?,?,?,?)",
-                           (value, kind, payload.get("source", "manual"), payload.get("confidence"),
-                            payload.get("tags", "")))
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO iocs
+               (value,type,source,confidence,tags,first_seen,last_seen,expires_at,verified,weight)
+               VALUES(?,?,?,?,?,COALESCE(?,CURRENT_TIMESTAMP),CURRENT_TIMESTAMP,?,?,?)""",
+            (value, kind, payload.get("source", "manual"), confidence, payload.get("tags", ""),
+             payload.get("first_seen"), expires_at,
+             int(bool(payload.get("verified", False))), weight),
+        )
         conn.commit()
         return {"id": cur.lastrowid or conn.execute("SELECT id FROM iocs WHERE type=? AND value=?", (kind,value)).fetchone()[0]}
 
 
 @app.get("/api/iocs", dependencies=[Depends(require_api_auth)])
-def list_iocs():
+def list_iocs(active: bool | None = None, min_weight: float | None = None):
     with get_db() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM iocs ORDER BY id DESC").fetchall()]
+        clauses, params = [], []
+        if active is True:
+            clauses.append("(expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)")
+        elif active is False:
+            clauses.append("expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP")
+        if min_weight is not None:
+            clauses.append("weight >= ?")
+            params.append(min_weight)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return [dict(r) for r in conn.execute(
+            f"SELECT * FROM iocs{where} ORDER BY id DESC", params).fetchall()]
+
+
+@app.post("/api/iocs/{ioc_id}/expire", dependencies=[Depends(require_api_auth)])
+def expire_ioc(ioc_id: int):
+    with get_db() as conn:
+        updated = conn.execute(
+            "UPDATE iocs SET expires_at = CURRENT_TIMESTAMP WHERE id = ?", (ioc_id,))
+        conn.commit()
+        if updated.rowcount == 0:
+            raise HTTPException(404, "IOC not found")
+    return {"id": ioc_id, "expired": True}
 
 
 @app.post("/api/iocs/match/{event_id}", dependencies=[Depends(require_api_auth)])
-def match_event_iocs(event_id: int):
+def match_event_iocs(event_id: int, min_weight: float = 0.0):
     with get_db() as conn:
         event = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         if not event: raise HTTPException(404, "Event not found")
         indicators = [dict(r) for r in conn.execute("SELECT * FROM iocs").fetchall()]
-        matches = match_iocs(dict(event), indicators)
+        matches = match_iocs(dict(event), indicators, min_weight=min_weight)
         for ioc in matches:
             conn.execute("INSERT OR IGNORE INTO ioc_matches(ioc_id,event_id) VALUES(?,?)",
                          (ioc["id"], event_id))
@@ -420,4 +539,3 @@ def enrich(payload: dict):
                      (indicator, "virustotal+otx", json.dumps(result)))
         conn.commit()
     return result
-

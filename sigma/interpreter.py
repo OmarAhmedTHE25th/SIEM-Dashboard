@@ -1,5 +1,6 @@
 """Small, dependency-free subset of the Sigma rule language."""
 from dataclasses import dataclass
+from attack import lookup
 
 
 @dataclass
@@ -8,6 +9,8 @@ class SigmaRule:
     detection: dict
     level: str = "medium"
     rule_id: str | None = None
+    mitre_technique: str | None = None
+    technique_name: str | None = None
 
 
 class SigmaInterpreter:
@@ -17,6 +20,8 @@ class SigmaInterpreter:
             rule.get("detection", {}),
             rule.get("level", "medium"),
             rule.get("id"),
+            rule.get("mitre_technique") or rule.get("mitre"),
+            rule.get("technique_name"),
         )
 
     @staticmethod
@@ -67,15 +72,22 @@ class SigmaInterpreter:
     def process_event(self, event):
         if not self.matches(event):
             return None
-        return {
+        alert = {
             "timestamp": event["timestamp"],
             "rule_name": self.rule.title,
             "severity": self.rule.level.upper(),
             "attacker_ip": event.get("source_ip", "unknown"),
             "target_user": event.get("user", "unknown"),
             "description": f"Sigma rule matched: {self.rule.title}",
-            **({"mitre_technique": event["mitre_technique"]} if event.get("mitre_technique") else {}),
         }
+        metadata = {"mitre": self.rule.mitre_technique,
+                    "mitre_technique": self.rule.mitre_technique,
+                    "technique_name": self.rule.technique_name}
+        if not metadata["mitre_technique"]:
+            metadata = lookup(self.rule.title)
+        if metadata:
+            alert.update(metadata)
+        return alert
 
     def as_detector(self):
         return self

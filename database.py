@@ -14,6 +14,8 @@ def _ensure_alert_columns(conn):
         conn.execute("ALTER TABLE alerts ADD COLUMN mitre_technique TEXT")
     if "mitre" not in columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN mitre TEXT")
+    if "technique_name" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN technique_name TEXT")
     if "dedup_key" not in columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN dedup_key TEXT")
     if "acknowledged_at" not in columns:
@@ -22,6 +24,18 @@ def _ensure_alert_columns(conn):
         conn.execute("ALTER TABLE alerts ADD COLUMN sla_due_at TEXT")
     if "dedup_count" not in columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN dedup_count INTEGER NOT NULL DEFAULT 1")
+    if "verdict" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN verdict TEXT")
+    if "verdict_reason" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN verdict_reason TEXT")
+    if "verdict_at" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN verdict_at TEXT")
+    if "suppressed_reason" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN suppressed_reason TEXT")
+    if "escalated_at" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN escalated_at TEXT")
+    if "closed_at" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN closed_at TEXT")
 
 
 def _ensure_event_columns(conn):
@@ -30,6 +44,26 @@ def _ensure_event_columns(conn):
         conn.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'sshd'")
     if "mitre_technique" not in columns:
         conn.execute("ALTER TABLE events ADD COLUMN mitre_technique TEXT")
+
+
+def _ensure_iocs_columns(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(iocs)").fetchall()}
+    if "first_seen" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN first_seen TEXT")
+    if "last_seen" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN last_seen TEXT")
+    if "expires_at" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN expires_at TEXT")
+    if "confidence" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5")
+    else:
+        conn.execute("UPDATE iocs SET confidence = 0.5 WHERE confidence IS NULL")
+    if "source" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+    if "verified" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
+    if "weight" not in columns:
+        conn.execute("ALTER TABLE iocs ADD COLUMN weight REAL NOT NULL DEFAULT 0.5")
 
 
 def init_db():
@@ -134,7 +168,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS iocs (
             id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL,
             type TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual',
-            confidence REAL, tags TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            confidence REAL NOT NULL DEFAULT 0.5, tags TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(type, value)
         );
         CREATE TABLE IF NOT EXISTS ioc_matches (
@@ -151,6 +185,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_iocs_value ON iocs(value);
         CREATE INDEX IF NOT EXISTS idx_case_alerts_alert ON case_alerts(alert_id);
         """)
+        _ensure_iocs_columns(conn)
         case_columns = {row[1] for row in cursor.execute("PRAGMA table_info(cases)")}
         if "severity" not in case_columns:
             cursor.execute("ALTER TABLE cases ADD COLUMN severity TEXT NOT NULL DEFAULT 'MEDIUM'")
@@ -210,8 +245,8 @@ def insert_alert(alert: dict):
             return duplicate[0]
         cursor.execute("""
                        INSERT INTO alerts
-                       (timestamp, rule_name, severity, attacker_ip, target_user, description, status, source, mitre_technique, mitre, dedup_key, sla_due_at, dedup_count)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                       (timestamp, rule_name, severity, attacker_ip, target_user, description, status, source, mitre_technique, mitre, technique_name, dedup_key, sla_due_at, dedup_count)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                        """, (
                            alert["timestamp"].isoformat(),
                            alert["rule_name"],
@@ -223,6 +258,7 @@ def insert_alert(alert: dict):
                            alert.get("source", "rule"),
                            alert.get("mitre_technique") or alert.get("mitre"),
                            alert.get("mitre_technique") or alert.get("mitre"),
+                           alert.get("technique_name"),
                            dedup_key,
                            alert.get("sla_due_at")
                        ))

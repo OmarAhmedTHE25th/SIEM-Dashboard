@@ -3,6 +3,7 @@ import math
 import os
 from collections import defaultdict, deque
 from datetime import timedelta
+from attack import lookup
 
 
 def _int(name, default):
@@ -13,11 +14,13 @@ def _int(name, default):
 
 
 class SuccessfulAfterFailuresDetector:
-    def __init__(self, threshold=None, window_seconds=None, source=("sshd", None)):
+    def __init__(self, threshold=None, window_seconds=None, source=("sshd", None),
+                 mitre=None, mitre_technique=None, technique_name=None):
         self.threshold = _int("SIEM_SUCCESS_AFTER_FAILURES", threshold or 5)
         self.window = timedelta(seconds=_int("SIEM_FAILURE_CORRELATION_WINDOW", window_seconds or 300))
         self.failures = defaultdict(deque)
         self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
+        self.mitre_technique, self.technique_name = mitre_technique or mitre, technique_name
 
     def process_event(self, event):
         if event.get("source", "sshd") not in self.sources:
@@ -33,20 +36,28 @@ class SuccessfulAfterFailuresDetector:
         if event.get("status") == "success" and len(history) >= self.threshold:
             count = len(history)
             history.clear()
-            return {
+            alert = {
                 "timestamp": now, "rule_name": "SUCCESS_AFTER_MANY_FAILURES",
                 "severity": "HIGH", "attacker_ip": event["source_ip"],
                 "target_user": event["user"],
                 "description": f"Successful login after {count} failures for {event['user']} within {self.window.total_seconds()}s.",
             }
+            tech = lookup(alert["rule_name"])
+            if self.mitre_technique or tech:
+                alert["mitre"] = self.mitre_technique or tech["mitre_technique"]
+                alert["mitre_technique"] = self.mitre_technique or tech["mitre_technique"]
+                alert["technique_name"] = self.technique_name or tech["technique_name"]
+            return alert
         return None
 
 
 class OffHoursLoginDetector:
-    def __init__(self, start=None, end=None, source=("sshd", None)):
+    def __init__(self, start=None, end=None, source=("sshd", None),
+                 mitre=None, mitre_technique=None, technique_name=None):
         self.start = _int("SIEM_OFF_HOURS_START", 22 if start is None else start)
         self.end = _int("SIEM_OFF_HOURS_END", 6 if end is None else end)
         self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
+        self.mitre_technique, self.technique_name = mitre_technique or mitre, technique_name
 
     def process_event(self, event):
         if event.get("source", "sshd") not in self.sources:
@@ -59,19 +70,29 @@ class OffHoursLoginDetector:
         )
         if not off_hours:
             return None
-        return {
+        alert = {
             "timestamp": event["timestamp"], "rule_name": "OFF_HOURS_LOGIN",
             "severity": "MEDIUM", "attacker_ip": event["source_ip"],
             "target_user": event["user"],
             "description": f"Successful login for {event['user']} at {event['timestamp'].isoformat()} outside normal hours.",
         }
+        tech = lookup(alert["rule_name"])
+        if self.mitre_technique or tech:
+            alert["mitre"] = self.mitre_technique or tech["mitre_technique"]
+            alert["mitre_technique"] = self.mitre_technique or tech["mitre_technique"]
+            alert["technique_name"] = self.technique_name or tech["technique_name"]
+        return alert
 
 
 class ImpossibleTravelDetector:
-    def __init__(self, max_speed_kmh=None, window_seconds=None):
+    def __init__(self, max_speed_kmh=None, window_seconds=None,
+                 mitre=None, mitre_technique=None, technique_name=None,
+                 source=("sshd", None)):
         self.max_speed = float(os.getenv("SIEM_IMPOSSIBLE_TRAVEL_KMH", max_speed_kmh or 800))
         self.window = timedelta(seconds=_int("SIEM_IMPOSSIBLE_TRAVEL_WINDOW", window_seconds or 86400))
         self.last = {}
+        self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
+        self.mitre_technique, self.technique_name = mitre_technique or mitre, technique_name
 
     @staticmethod
     def _distance(a, b):
@@ -81,6 +102,8 @@ class ImpossibleTravelDetector:
         return 6371.0 * 2 * math.asin(math.sqrt(x))
 
     def process_event(self, event, location=None):
+        if event.get("source", "sshd") not in self.sources:
+            return None
         if event.get("status") != "success" or not location or location.get("latitude") is None or location.get("longitude") is None:
             return None
         key = event["user"]
@@ -96,9 +119,15 @@ class ImpossibleTravelDetector:
         speed = distance / (elapsed / 3600)
         if speed <= self.max_speed:
             return None
-        return {
+        alert = {
             "timestamp": event["timestamp"], "rule_name": "IMPOSSIBLE_TRAVEL",
             "severity": "HIGH", "attacker_ip": event["source_ip"],
             "target_user": event["user"],
             "description": f"User {event['user']} traveled {distance:.0f} km in {elapsed / 3600:.1f}h ({speed:.0f} km/h).",
         }
+        tech = lookup(alert["rule_name"])
+        if self.mitre_technique or tech:
+            alert["mitre"] = self.mitre_technique or tech["mitre_technique"]
+            alert["mitre_technique"] = self.mitre_technique or tech["mitre_technique"]
+            alert["technique_name"] = self.technique_name or tech["technique_name"]
+        return alert

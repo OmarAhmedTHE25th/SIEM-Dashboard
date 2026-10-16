@@ -24,7 +24,8 @@ def _rule_config(item):
     rule_type = item.get("type") or item.get("kind")
     config = dict(item.get("config") or {})
     config.update({k: v for k, v in item.items() if k in {
-        "threshold", "window_seconds", "start", "end", "max_speed_kmh"
+        "threshold", "window_seconds", "start", "end", "max_speed_kmh",
+        "mitre", "mitre_technique", "technique_name", "source"
     }})
     if rule_type in _NATIVE:
         return _NATIVE[rule_type](**config)

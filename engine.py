@@ -1,13 +1,17 @@
 from collections import defaultdict, deque
 from datetime import timedelta
+from attack import lookup
 
 class BruteForceDetector:
-    def __init__(self, threshold: int = 3, window_seconds: int = 60, source=("sshd", None)):
+    def __init__(self, threshold: int = 3, window_seconds: int = 60, source=("sshd", None),
+                 mitre=None, mitre_technique=None, technique_name=None):
         self.threshold = int(__import__("os").getenv("SIEM_BRUTE_FORCE_THRESHOLD", threshold))
         self.window = timedelta(seconds=int(__import__("os").getenv("SIEM_BRUTE_FORCE_WINDOW", window_seconds)))
         self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
         # Key: source_ip (str) -> Value: deque of datetime timestamps
         self.ip_windows = defaultdict(deque)
+        self.mitre_technique = mitre_technique or mitre
+        self.technique_name = technique_name
 
     def process_event(self, event: dict) -> dict | None:
         if event.get("source", "sshd") not in self.sources:
@@ -34,7 +38,7 @@ class BruteForceDetector:
             # Clear this IP's queue so we don't spam duplicate alerts on the next failure
             history.clear()
 
-            return {
+            alert = {
                 "rule_name": "SSH_BRUTE_FORCE",
                 "severity": "HIGH",
                 "attacker_ip": ip,
@@ -45,5 +49,11 @@ class BruteForceDetector:
                     f"within {self.window.total_seconds()}s window."
                 )
             }
+            technique = lookup(alert["rule_name"])
+            if self.mitre_technique or technique:
+                alert["mitre"] = self.mitre_technique or technique["mitre_technique"]
+                alert["mitre_technique"] = self.mitre_technique or technique["mitre_technique"]
+                alert["technique_name"] = self.technique_name or technique["technique_name"]
+            return alert
 
         return None

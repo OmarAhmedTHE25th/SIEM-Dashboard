@@ -17,6 +17,7 @@ from ml_engine import AnomalyScorer, severity_from_score
 from threat_intel import IOCMatcher
 from correlator import CorrelationEngine
 from rules_loader import load_rules
+from attack import lookup
 
 DEFAULT_LOG_PATH = "/var/log/auth.log"
 ML_ALERT_COOLDOWN = timedelta(minutes=5)
@@ -123,12 +124,16 @@ def process_event(event: dict, pipeline: DetectionPipeline) -> list[dict]:
     location = pipeline.enricher.lookup(event["source_ip"])
     matches = pipeline.ioc_matcher.match(event)
     if matches:
+        weight = max(getattr(match, "weight", 0.0) for match in matches)
+        severity = "HIGH" if weight >= 0.7 else "MEDIUM" if weight >= 0.4 else "LOW"
         alerts.append({
             "timestamp": event["timestamp"], "rule_name": "IOC_MATCH",
-            "severity": "HIGH", "attacker_ip": event["source_ip"],
+            "severity": severity, "attacker_ip": event["source_ip"],
             "target_user": event["user"],
             "description": f"Local IOC match: {', '.join(matches)}",
-            "source": event.get("source", "sshd"), "mitre": "T1588.006",
+            "source": event.get("source", "sshd"),
+            "mitre": lookup("IOC_MATCH")["mitre_technique"],
+            **lookup("IOC_MATCH"),
             "event_status": event.get("status"),
         })
     if event.get("source") == "suricata":
@@ -137,6 +142,8 @@ def process_event(event: dict, pipeline: DetectionPipeline) -> list[dict]:
             "severity": "HIGH", "attacker_ip": event["source_ip"],
             "target_user": event["user"], "description": "Suricata event",
             "source": "suricata", "event_status": event.get("status"),
+            "mitre": lookup("SURICATA_ALERT")["mitre_technique"],
+            **lookup("SURICATA_ALERT"),
         })
 
     for detector in pipeline.detectors:

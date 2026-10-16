@@ -1,11 +1,19 @@
 rules:
   - type: brute_force
+    mitre: T1110.001
+    technique_name: "Brute Force: Password Guessing"
     threshold: 5
     window_seconds: 60
   - type: successful_after_failures
+    mitre: T1078
+    technique_name: Valid Accounts
     threshold: 5
     window_seconds: 300
   - type: off_hours_login
+    mitre: T1078
+    technique_name: Valid Accounts
     start: 22
     end: 6
   - type: impossible_travel
+    mitre: T1078
+    technique_name: Valid Accounts

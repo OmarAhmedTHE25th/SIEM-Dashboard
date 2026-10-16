@@ -11,4 +11,5 @@
 | CORR_ACCOUNT_TAKEOVER | `tests/detections/corr_account_takeover` | [x] |
 | IOC_MATCH | `tests/detections/ioc_match` | [x] |
 | Sigma | `tests/test_sigma.py` | [x] |
+| MITRE ATT&CK metadata | `tests/test_attack.py` | [x] |
 | ML_ANOMALOUS_BEHAVIOR | no deterministic fixture | [ ] |

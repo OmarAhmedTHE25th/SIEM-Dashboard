@@ -7,6 +7,7 @@ failing fixture is unverified — its fixture is passing for other reasons.
 import sys
 import json
 import tempfile
+import os
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -50,7 +51,7 @@ def rules_yaml(entries):
 
 def run_fixtures(pipeline):
     """Run every fixture through the pipeline; return {fixture_name: fired_rules}."""
-    root = Path("tests/detections")
+    root = ROOT / "tests" / "detections"
     results = {}
     for directory in sorted(root.iterdir()):
         if not directory.is_dir():
@@ -84,7 +85,10 @@ def main():
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
         f.write(rules_yaml(BASE_RULES))
         baseline_path = f.name
-    baseline = run_fixtures(load_rules(baseline_path))
+    try:
+        baseline = run_fixtures(load_rules(baseline_path))
+    finally:
+        os.unlink(baseline_path)
 
     for omitted in BASE_RULES:
         rule_type = omitted["type"]
@@ -93,7 +97,10 @@ def main():
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
             f.write(rules_yaml(reduced))
             reduced_path = f.name
-        reduced_results = run_fixtures(load_rules(reduced_path))
+        try:
+            reduced_results = run_fixtures(load_rules(reduced_path))
+        finally:
+            os.unlink(reduced_path)
 
         any_fail = False
         for name in sorted(baseline):
