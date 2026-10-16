@@ -3,8 +3,8 @@ from datetime import timedelta
 
 class BruteForceDetector:
     def __init__(self, threshold: int = 3, window_seconds: int = 60, source=("sshd", None)):
-        self.threshold = threshold
-        self.window = timedelta(seconds=window_seconds)
+        self.threshold = int(__import__("os").getenv("SIEM_BRUTE_FORCE_THRESHOLD", threshold))
+        self.window = timedelta(seconds=int(__import__("os").getenv("SIEM_BRUTE_FORCE_WINDOW", window_seconds)))
         self.sources = set(source if isinstance(source, (list, tuple, set)) else [source])
         # Key: source_ip (str) -> Value: deque of datetime timestamps
         self.ip_windows = defaultdict(deque)

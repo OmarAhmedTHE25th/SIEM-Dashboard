@@ -234,7 +234,7 @@
         tbody.innerHTML = alerts.map(a => `
   <tr class="hover:bg-slate-800/50 transition">
     <td class="py-3 px-3 text-slate-400">${escapeHtml((a.timestamp || '').replace('T', ' ').substring(0, 19))}</td>
-    <td class="py-3 px-3 text-rose-300 font-bold">${escapeHtml(a.rule_name)}</td>
+    <td class="py-3 px-3 text-rose-300 font-bold">${escapeHtml(a.rule_name)}${Number(a.dedup_count || 1) > 1 ? `<span class="ml-1 px-1 rounded bg-slate-700 text-slate-200">${escapeHtml(a.dedup_count)}x</span>` : ''}</td>
     <td class="py-3 px-3">
       <span class="px-2 py-0.5 rounded border text-[10px] uppercase font-bold ${severityClasses[a.severity] || severityClasses.LOW}">
         ${escapeHtml(a.severity)}

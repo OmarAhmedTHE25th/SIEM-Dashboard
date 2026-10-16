@@ -20,6 +20,8 @@ def _ensure_alert_columns(conn):
         conn.execute("ALTER TABLE alerts ADD COLUMN acknowledged_at TEXT")
     if "sla_due_at" not in columns:
         conn.execute("ALTER TABLE alerts ADD COLUMN sla_due_at TEXT")
+    if "dedup_count" not in columns:
+        conn.execute("ALTER TABLE alerts ADD COLUMN dedup_count INTEGER NOT NULL DEFAULT 1")
 
 
 def _ensure_event_columns(conn):
@@ -194,15 +196,22 @@ def insert_alert(alert: dict):
                                                         ("rule_name", "attacker_ip", "target_user"))
         # Do not flood the console with the same active finding.
         duplicate = cursor.execute(
-            "SELECT id FROM alerts WHERE dedup_key = ? AND status = 'active' "
-            "AND timestamp >= datetime(?, '-5 minutes') LIMIT 1",
-            (dedup_key, alert["timestamp"].isoformat())).fetchone()
+            "SELECT id, timestamp FROM alerts WHERE dedup_key = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1", (dedup_key,)).fetchone()
         if duplicate:
+            from datetime import datetime, timedelta
+            existing_time = datetime.fromisoformat(duplicate[1])
+            current_time = alert["timestamp"]
+            if current_time - existing_time > timedelta(minutes=5):
+                duplicate = None
+        if duplicate:
+            cursor.execute("UPDATE alerts SET dedup_count = dedup_count + 1 WHERE id = ?", (duplicate[0],))
+            conn.commit()
             return duplicate[0]
         cursor.execute("""
                        INSERT INTO alerts
-                       (timestamp, rule_name, severity, attacker_ip, target_user, description, status, source, mitre_technique, mitre, dedup_key, sla_due_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       (timestamp, rule_name, severity, attacker_ip, target_user, description, status, source, mitre_technique, mitre, dedup_key, sla_due_at, dedup_count)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                        """, (
                            alert["timestamp"].isoformat(),
                            alert["rule_name"],

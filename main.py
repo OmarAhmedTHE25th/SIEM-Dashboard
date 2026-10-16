@@ -1,5 +1,6 @@
 import argparse
 import os
+from dataclasses import dataclass
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from parser import parse_line
@@ -15,6 +16,7 @@ from database import init_db, insert_event, insert_alert
 from ml_engine import AnomalyScorer, severity_from_score
 from threat_intel import IOCMatcher
 from correlator import CorrelationEngine
+from rules_loader import load_rules
 
 DEFAULT_LOG_PATH = "/var/log/auth.log"
 ML_ALERT_COOLDOWN = timedelta(minutes=5)
@@ -88,21 +90,94 @@ class RealtimeBehaviorTracker:
         }
 
 
+@dataclass
+class DetectionPipeline:
+    detectors: list
+    correlator: object
+    enricher: object
+    ml_scorer: object
+    tracker: RealtimeBehaviorTracker
+    ioc_matcher: object
+    last_ml_alert: dict
+
+
+def build_pipeline(rules=None, enricher=None, ml_scorer=None, ioc_matcher=None, correlator=None):
+    loaded = rules or load_rules()
+    detectors = list(getattr(loaded, "rules", loaded))
+    pipeline = DetectionPipeline(
+        detectors=detectors,
+        correlator=correlator or CorrelationEngine(),
+        enricher=enricher or IPEnricher(),
+        ml_scorer=ml_scorer or AnomalyScorer(),
+        tracker=RealtimeBehaviorTracker(),
+        ioc_matcher=ioc_matcher or IOCMatcher(),
+        last_ml_alert={},
+    )
+    roles = [type(detector).__name__ for detector in detectors]
+    print(f"[*] Loaded detectors: {', '.join(roles) if roles else 'none'}")
+    return pipeline
+
+
+def process_event(event: dict, pipeline: DetectionPipeline) -> list[dict]:
+    alerts = []
+    location = pipeline.enricher.lookup(event["source_ip"])
+    matches = pipeline.ioc_matcher.match(event)
+    if matches:
+        alerts.append({
+            "timestamp": event["timestamp"], "rule_name": "IOC_MATCH",
+            "severity": "HIGH", "attacker_ip": event["source_ip"],
+            "target_user": event["user"],
+            "description": f"Local IOC match: {', '.join(matches)}",
+            "source": event.get("source", "sshd"), "mitre": "T1588.006",
+            "event_status": event.get("status"),
+        })
+    if event.get("source") == "suricata":
+        alerts.append({
+            "timestamp": event["timestamp"], "rule_name": "SURICATA_ALERT",
+            "severity": "HIGH", "attacker_ip": event["source_ip"],
+            "target_user": event["user"], "description": "Suricata event",
+            "source": "suricata", "event_status": event.get("status"),
+        })
+
+    for detector in pipeline.detectors:
+        if isinstance(detector, ImpossibleTravelDetector):
+            alert = detector.process_event(event, location)
+        else:
+            alert = detector.process_event(event)
+        if alert:
+            alert["source"] = event.get("source", "sshd")
+            alert["event_status"] = event.get("status")
+            alert["description"] += f" [{pipeline.enricher.describe(location)}]"
+            alerts.append(alert)
+
+    features = pipeline.tracker.add_and_extract(event)
+    if features["total_attempts"] >= 3 and pipeline.ml_scorer.is_ready:
+        anomalous, score = pipeline.ml_scorer.score_ip_behavior(features)
+        now = datetime.now(timezone.utc)
+        ip = event["source_ip"]
+        if anomalous and (not pipeline.last_ml_alert.get(ip) or now - pipeline.last_ml_alert[ip] >= ML_ALERT_COOLDOWN):
+            pipeline.last_ml_alert[ip] = now
+            alerts.append({
+                "timestamp": now, "rule_name": "ML_ANOMALOUS_BEHAVIOR",
+                "severity": severity_from_score(score, pipeline.ml_scorer.threshold),
+                "attacker_ip": ip, "target_user": event["user"],
+                "description": f"IsolationForest outlier detected (Score: {score:.3f})",
+                "source": event.get("source", "sshd"), "event_status": event.get("status"),
+            })
+
+    correlated = []
+    for alert in alerts:
+        correlated.extend(pipeline.correlator.feed(alert))
+    return alerts + correlated
+
+
 if __name__ == "__main__":
     init_db()
-    rule_detector = BruteForceDetector(threshold=3, window_seconds=60)
-    success_after_failures = SuccessfulAfterFailuresDetector()
-    impossible_travel = ImpossibleTravelDetector()
-    off_hours = OffHoursLoginDetector()
-    ip_enricher = IPEnricher()
-    ml_scorer = AnomalyScorer()
-    tracker = RealtimeBehaviorTracker()
-    last_ml_alert = {}
-    ioc_matcher = IOCMatcher()
-    correlator = CorrelationEngine()
+    pipeline = build_pipeline()
+    pipeline.correlator = CorrelationEngine.replay_from_db()
 
     print(f"[*] SIEM Agent live. Watching {LOG_PATH} with Rule + ML Detection...")
-    if not ml_scorer.is_ready:
+    if not pipeline.ml_scorer.is_ready:
         print("[!] WARNING: ML model not loaded. Run `python ml_engine.py` to train it. Rules only for now.")
 
     # Monitors logs; triggers rule-based and ML-driven security alerts
@@ -112,63 +187,6 @@ if __name__ == "__main__":
             continue
 
         insert_event(event)
-        matches = ioc_matcher.match(event)
-        if matches:
-            ioc_alert = {
-                "timestamp": event["timestamp"], "rule_name": "IOC_MATCH",
-                "severity": "HIGH", "attacker_ip": event["source_ip"],
-                "target_user": event["user"],
-                "description": f"Local IOC match: {', '.join(matches)}",
-                "source": event.get("source", "sshd"), "mitre": "T1588.006",
-            }
-            insert_alert(ioc_alert)
-
-
-        rule_alerts = [rule_detector.process_event(event),
-                       success_after_failures.process_event(event),
-                       off_hours.process_event(event)]
-        # GeoIP/reputation is best-effort; the travel rule consumes coordinates.
-        # The cache keeps repeated events from causing repeated provider calls.
-        location = ip_enricher.lookup(event["source_ip"])
-        rule_alerts.append(impossible_travel.process_event(event, location))
-        for rule_alert in rule_alerts:
-            if rule_alert:
-                rule_alert["source"] = event.get("source", "sshd")
-                rule_alert["event_status"] = event.get("status")
-                rule_alert["description"] += f" [{ip_enricher.describe(location)}]"
-                insert_alert(rule_alert)
-                for correlated in correlator.feed(rule_alert):
-                    insert_alert(correlated)
-                print(f"[RULE ALERT] {rule_alert['rule_name']} from {rule_alert['attacker_ip']}")
-
-
-        features = tracker.add_and_extract(event)
-
-        if features["total_attempts"] >= 3 and ml_scorer.is_ready:
-            is_anomaly, score = ml_scorer.score_ip_behavior(features)
-
-            if is_anomaly:
-                ip = event["source_ip"]
-                now = datetime.now(timezone.utc)
-                last = last_ml_alert.get(ip)
-
-
-                if last and now - last < ML_ALERT_COOLDOWN:
-                    continue
-
-                last_ml_alert[ip] = now
-                ml_alert = {
-                    "timestamp": now,
-                    "rule_name": "ML_ANOMALOUS_BEHAVIOR",
-                    "severity": severity_from_score(score, ml_scorer.threshold),
-                    "attacker_ip": ip,
-                    "target_user": event["user"],
-                    "description": (
-                        f"IsolationForest outlier detected (Score: {score:.3f}, "
-                        f"FailRate: {features['failure_rate']:.2f}, "
-                        f"SprayCount: {features['unique_users']}) "
-                        f"[{ip_enricher.describe(location)}]"
-                    )
-                }
-                insert_alert(ml_alert)
-                print(f"[ML ALERT] Anomaly from {ip} (Score: {score:.3f})")
+        for alert in process_event(event, pipeline):
+            insert_alert(alert)
+            print(f"[ALERT] {alert['rule_name']} from {alert['attacker_ip']}")

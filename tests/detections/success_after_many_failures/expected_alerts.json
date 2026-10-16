@@ -1,1 +1,1 @@
-[]
+{"expected":[{"rule_name":"SSH_BRUTE_FORCE"},{"rule_name":"SUCCESS_AFTER_MANY_FAILURES"},{"rule_name":"CORR_COMPROMISE_SUSPECTED"}]}

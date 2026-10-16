@@ -40,19 +40,29 @@ class SigmaInterpreter:
         detection = self.rule.detection
         condition = detection.get("condition", "selection")
         selections = {
-            name: all(self._match_value(event.get(field), value) for field, value in values.items())
+            name: all(self._match_field(event, field, value) for field, value in values.items())
             for name, values in detection.items()
             if name != "condition" and isinstance(values, dict)
         }
         if condition in selections:
             return selections[condition]
-        if condition.lower() in {"1 of them", "1 of *", "any"}:
+        if condition.lower() in {"1 of them", "1 of *", "any"} or condition.lower().startswith(("1 of ", "all of ")):
             raise ValueError("unsupported Sigma condition: 1 of")
         if " and " in condition.lower():
             return all(selections.get(part.strip(), False) for part in condition.split("and"))
         if " or " in condition.lower():
             raise ValueError("unsupported Sigma condition: or")
         return any(selections.values())
+
+    @classmethod
+    def _match_field(cls, event, field, expected):
+        if "|" in field:
+            base, modifier = field.rsplit("|", 1)
+            if modifier not in {"contains", "startswith", "endswith"}:
+                raise ValueError(f"unsupported Sigma modifier: {modifier}")
+            expected = f"{expected}|{modifier}"
+            field = base
+        return cls._match_value(event.get(field), expected)
 
     def process_event(self, event):
         if not self.matches(event):

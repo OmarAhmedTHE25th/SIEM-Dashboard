@@ -1,0 +1,1 @@
+{"expected":[{"rule_name":"CORR_MULTI_STAGE_ATTACK"},{"rule_name":"SURICATA_ALERT"},{"rule_name":"SSH_BRUTE_FORCE"}]}

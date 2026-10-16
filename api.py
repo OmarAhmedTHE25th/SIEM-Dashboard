@@ -91,13 +91,13 @@ def get_alerts(limit: int = 50, status: str | None = None):
             limit = max(1, min(limit, 500))
             if status:
                 rows = cur.execute(
-                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, sla_due_at, dedup_key "
+                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, sla_due_at, dedup_key, dedup_count "
                     "FROM alerts WHERE status = ? ORDER BY id DESC LIMIT ?",
                     (status.lower(), limit),
                 ).fetchall()
             else:
                 rows = cur.execute(
-                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, sla_due_at, dedup_key "
+                    "SELECT id, timestamp, rule_name, severity, attacker_ip, target_user, description, status, mitre, sla_due_at, dedup_key, dedup_count "
                     "FROM alerts ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
@@ -131,7 +131,8 @@ def get_incidents(limit: int = 10):
             rows = cur.execute(
                 """
                 SELECT attacker_ip, rule_name, COUNT(*) AS count, MAX(timestamp) AS last_seen,
-                       MIN(timestamp) AS first_seen, SUM(CASE WHEN status = 'suppressed' THEN 1 ELSE 0 END) AS suppressed_count
+                       MIN(timestamp) AS first_seen, SUM(dedup_count) AS count_including_dedup,
+                       SUM(CASE WHEN status = 'suppressed' THEN 1 ELSE 0 END) AS suppressed_count
                 FROM alerts
                 WHERE status != 'suppressed'
                 GROUP BY attacker_ip, rule_name
@@ -420,13 +421,3 @@ def enrich(payload: dict):
         conn.commit()
     return result
 
-
-@app.get("/api/alerts/export", dependencies=[Depends(require_api_auth)])
-def export_alerts():
-    with get_db() as conn:
-        rows = conn.execute("SELECT id,timestamp,rule_name,severity,attacker_ip,target_user,status,description FROM alerts ORDER BY id DESC").fetchall()
-    output = io.StringIO(); writer = csv.writer(output)
-    writer.writerow(rows[0].keys() if rows else ["id", "timestamp", "rule_name", "severity"])
-    writer.writerows([tuple(r) for r in rows])
-    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv",
-                             headers={"Content-Disposition": "attachment; filename=alerts.csv"})
